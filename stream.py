@@ -56,7 +56,7 @@ from camera import open_camera, grab_frame, close_camera
 from detector import Detector
 from tracker import CentroidTracker
 from config import Config
-from robot_client import run_pick_and_place_cycle
+from robot_client import run_pick_and_place_cycle, close_connection as close_robot_connection
 
 # JPEG quality for the MJPEG stream (0-100). Lower = smaller frames = less
 # network/encode time, at the cost of visible compression artifacts. This
@@ -88,13 +88,36 @@ config = Config.load()
 # disk and builds the calibration matrix, both far too slow to redo per
 # frame or per detection pass.
 detector = Detector(config)
-tracker = CentroidTracker(max_disappeared=15, max_distance=50)
+# min_hits=2: a new object must survive into a second, independent
+# detect_loop pass before it's exposed to /pick -- filters a one-off
+# YOLO flicker without making genuine new objects wait through 3+
+# inference passes (~3.5-5.4s) to become pickable. See tracker.py's
+# "NOTE ON TIMING" for why detect_loop's ~1.2-1.8s pace (not camera
+# frame rate) is what min_hits actually counts against. Tune here if
+# phantoms slip through (raise) or first-appearance still feels slow
+# (lower to 1 -- disables the filter entirely).
+tracker = CentroidTracker(max_disappeared=15, max_distance=50, min_hits=1)
 
 # Shared state between the three threads described above.
 _lock = threading.Lock()
 _latest_raw_frame = None        # most recent frame straight from the camera
 _latest_tracked = {}            # object_id -> DetectedShape, from the most recent detection pass
 _latest_detections = []         # most recent detections (DetectedShape list), for other consumers (e.g. /pick below)
+
+# Guards the CentroidTracker's own internal state (tracker.objects /
+# .disappeared / .hits). detect_loop is normally the only thread that
+# touches these (inside tracker.update()), but /pick's on_placed
+# callback below ALSO needs to remove an object the instant it's
+# picked -- rather than waiting for it to naturally age out of
+# tracker.update()'s own output over the next several detection passes
+# (see tracker.py's discard() docstring for why that matters: a picked
+# object would otherwise keep showing up, at its old/now-empty spot,
+# long enough for a second /pick click to target it again). Two
+# threads writing to the same OrderedDicts needs a lock around BOTH
+# sides -- this is that lock. Separate from _lock above since this one
+# only needs to be held for the tracker's own quick update()/discard()
+# calls, not the (much larger) raw-frame/tracked-snapshot state.
+_tracker_lock = threading.Lock()
 
 # Guards against two /pick requests (e.g. a double-click) trying to talk
 # to the robot at the same time -- run_pick_and_place_cycle() holds one
@@ -137,7 +160,8 @@ def detect_loop():
             continue
 
         _, detections = detector.detect(frame)  # ignore detector's own annotated copy of this (now stale) frame
-        tracked = tracker.update(detections)
+        with _tracker_lock:
+            tracked = tracker.update(detections)
 
         with _lock:
             _latest_tracked = dict(tracked)  # snapshot -- tracker.update() mutates its internal dict in place on the next call
@@ -230,24 +254,41 @@ def video():
     )
 
 
+def _on_placed(object_id):
+    """Called by run_pick_and_place_cycle the instant one shape is
+    actually picked and placed -- removes it from both the tracker's
+    own internal state and the exposed _latest_tracked snapshot right
+    away, rather than leaving it to linger at its old (now-empty) spot
+    until tracker.update() naturally ages it out over the next several
+    detection passes (see tracker.py's discard() docstring). Without
+    this, a second /pick click soon after the first could target an
+    object that was already moved."""
+    with _tracker_lock:
+        tracker.discard(object_id)
+    with _lock:
+        _latest_tracked.pop(object_id, None)
+
+
 @app.route('/pick', methods=['POST'])
 def pick():
     """Runs one pick-and-place cycle over whatever's currently tracked --
     triggered on demand (a button click), not automatically, so the arm
     never moves without you asking it to. Uses _latest_tracked as-is
     rather than re-detecting, so what you see in the live feed at the
-    moment you click is exactly what gets picked."""
+    moment you click is exactly what gets picked. Passes the dict
+    itself (not .values()) so each placed object's ID can be reported
+    back and removed immediately via _on_placed -- see its docstring."""
     if not _pick_lock.acquire(blocking=False):
         return jsonify(ok=False, error="A pick cycle is already in progress"), 409
 
     try:
         with _lock:
-            detections = list(_latest_tracked.values())
+            tracked_snapshot = dict(_latest_tracked)
 
-        if not detections:
+        if not tracked_snapshot:
             return jsonify(ok=False, error="No current detections to pick"), 400
 
-        results = run_pick_and_place_cycle(detections)
+        results = run_pick_and_place_cycle(tracked_snapshot, on_placed=_on_placed)
         return jsonify(ok=True, results=results)
 
     except Exception as e:
@@ -264,3 +305,7 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5000, threaded=True)
     finally:
         close_camera(camera)
+        # Clean shutdown -- NOT called after an ordinary pick cycle (see
+        # robot_client.py's module docstring for why that broke the
+        # robot-side script).
+        close_robot_connection()

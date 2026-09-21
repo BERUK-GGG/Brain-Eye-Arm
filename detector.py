@@ -88,7 +88,45 @@ class Detector:
 
         self.config = config
         self.model = YOLO(config.model_path)
-        self.H = cv2.getPerspectiveTransform(config.image_points, config.robot_points)
+
+        # getPerspectiveTransform() only accepts EXACTLY 4 point pairs --
+        # it fails outright (as you just saw) with 5+. findHomography()
+        # accepts any number >= 4: an exact fit at 4, and a least-squares
+        # fit (more robust to jogging/measurement noise in the
+        # calibration points themselves) at 5+. Since config.json now has
+        # 5 calibration points, this needs to be findHomography() -- also
+        # what this project settled on earlier for exactly this reason.
+        #
+        # Points are reshaped to (N, 1, 2) -- OpenCV's canonical point-list
+        # shape (the same shape perspectiveTransform() itself expects) --
+        # rather than passed as plain (N, 2). This is the version-portable
+        # way to call these functions; passing (N, 2) directly happened to
+        # work in testing here but produced a silently-None result on your
+        # Pi's OpenCV 5.0.0 (a much newer major version) instead of raising
+        # an error, which is the actual bug this ran into: findHomography()
+        # can legitimately fail and return None with NO exception, and the
+        # old code didn't check for that -- so init "succeeded" and the
+        # crash only surfaced much later, on the first real detection,
+        # with a confusing error that didn't point back at calibration at
+        # all. Checking immediately here means a bad calibration fails
+        # loudly and immediately, in __init__, not mid-pick.
+        image_points = config.image_points.reshape(-1, 1, 2).astype(np.float32)
+        robot_points = config.robot_points.reshape(-1, 1, 2).astype(np.float32)
+        num_points = len(image_points)
+
+        if num_points == 4:
+            self.H = cv2.getPerspectiveTransform(image_points, robot_points)
+        else:
+            self.H, _ = cv2.findHomography(image_points, robot_points)
+
+        if self.H is None:
+            raise RuntimeError(
+                f"Camera->robot calibration failed: cv2.{'getPerspectiveTransform' if num_points == 4 else 'findHomography'}() "
+                f"returned no solution for the {num_points} points in config.json's \"calibration\". "
+                f"Check for duplicate/near-duplicate points, points that are (near-)collinear in either "
+                f"image or robot space, or a simple typo in one of the coordinates."
+            )
+
         DetectedShape.configure_place_targets(config.place_targets)
 
     def pixel_to_robot(self, u, v):
