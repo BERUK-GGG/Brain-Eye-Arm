@@ -54,14 +54,27 @@ TCPStart(socket, 0)
 def send_reply(message):
     TCPWrite(socket, (message + "\n").encode("utf-8"))
 
+last_read_err = 0
+
 while True:
 
     # Wait for data from Python client
     err, recBuf = TCPRead(socket)
 
     if err != 0:
-       print("TCPRead error:", err)
-       break
+        # A read error (e.g. client disconnected) must NOT end the script --
+        # only an explicit CLOSE does (see header). Log once per run of
+        # identical errors so a dead handle doesn't flood the console,
+        # drop any half-received line from the old client, and back off
+        # briefly instead of spinning.
+        if err != last_read_err:
+            print("TCPRead error:", err)
+            last_read_err = err
+        buffer = ""
+        time.sleep(0.1)
+        continue
+
+    last_read_err = 0
 
     if not recBuf:
         continue

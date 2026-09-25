@@ -2,6 +2,9 @@
   "model_path": "models/yolo26n_best.pt",
   "yolo_conf_threshold": 0.5,
   "orientation_margin": 10,
+  "class_aliases": {
+    "Rectangle": "Square"
+  },
   "calibration": {
     "image_points": [
       [1827, 1731],
@@ -22,5 +25,15 @@
     "Triangle": [177.5687, -267.7427],
     "Circle": [291.1842, -143.4041],
     "Square":  [291.1842, -273.7601]
+  },
+  "robot": {
+    "host": "192.168.5.1",
+    "port": 6601,
+    "timeout": 5,
+    "home_xy": [250, -170],
+    "z_safe": 100,
+    "z_pick": 17,
+    "suction_do_index": 1,
+    "suction_settle_seconds": 0.5
   }
 }
