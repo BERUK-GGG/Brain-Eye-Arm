@@ -26,6 +26,11 @@
     "Circle": [291.1842, -143.4041],
     "Square":  [291.1842, -273.7601]
   },
+  "target_tilt": {
+    "Triangle": 0,
+    "Circle": 0,
+    "Square": 0
+  },
   "robot": {
     "host": "192.168.5.1",
     "port": 6601,

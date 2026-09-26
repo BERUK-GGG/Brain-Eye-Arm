@@ -28,7 +28,7 @@ def main():
         return
 
     robot = RobotClient(config.robot)
-    controller = PickAndPlaceController(robot, config.robot, config.place_targets)
+    controller = PickAndPlaceController(robot, config.robot, config.place_targets, config.target_tilt)
     try:
         print("Results:", controller.run_cycle(detections))
     except (OSError, RuntimeError) as e:

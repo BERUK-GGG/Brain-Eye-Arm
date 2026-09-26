@@ -37,6 +37,27 @@
 # disconnect (you just see the same TCPRead error repeating forever),
 # this loop needs to re-create the socket on error instead of just
 # continuing -- tell me and I'll change it to do that.
+#
+# TWO MORE OPEN QUESTIONS, THIS TIME ABOUT ROTATION
+# ------------------------------------------------------
+# POSE now carries a 4th value, r -- see robot/client.py's docstring for
+# why it's an OFFSET from however P1 was taught, not an absolute angle.
+# Applying that offset means knowing which element of P1["pose"] is the
+# tool's yaw (rotation about the vertical axis a top-down suction pick
+# actually needs). ROTATION_POSE_INDEX below assumes a 6-axis pose,
+# [x, y, z, rx, ry, rz], with yaw last (index 5) -- correct for a Magician
+# E6. The startup print below shows the real P1["pose"] the first time
+# this runs; if its length or the rotating element isn't what's expected,
+# fix ROTATION_POSE_INDEX to match before trusting any rotation command.
+#
+# Separately: whether a POSITIVE r here actually turns the tool the same
+# direction (and by the same number of degrees) as a positive orientation
+# reading from the camera is UNVERIFIED -- the vision side and the robot
+# side were never calibrated against each other for rotation (see
+# README's "Orientation, precisely"), only for x/y position. Test this
+# with one object at a known tilt before trusting it for a real pick: if
+# the placed object comes out rotated the wrong way, negate r on the
+# client side (robot/picker.py's `correction`), not here.
 
 import time
 
@@ -46,10 +67,21 @@ buffer = ""
 # client actually sends (robot_client.py sends "CLOSE").
 CLOSE_COMMANDS = ("CLOSE", "close_connection")
 
+# Index into P1["pose"] that holds the tool's yaw -- see the comment
+# above. Change this if your P1["pose"] isn't [x, y, z, rx, ry, rz].
+ROTATION_POSE_INDEX = 5
+
 err, socket = TCPCreate(True, "192.168.5.1", 6601)
 print("TCPCreate:", err)
 
 TCPStart(socket, 0)
+
+# Captured ONCE, before any POSE message can modify it -- every incoming
+# r is added to THIS, never to whatever P1["pose"] happens to hold at the
+# time (which would drift after repeated cycles). r=0 always means
+# "exactly as taught", no matter how many pick cycles have run since.
+print("P1 pose as taught:", P1["pose"])
+BASE_ROTATION = P1["pose"][ROTATION_POSE_INDEX]
 
 def send_reply(message):
     TCPWrite(socket, (message + "\n").encode("utf-8"))
@@ -113,7 +145,7 @@ while True:
         if message.startswith("POSE,"):
             parts = message.split(",")
 
-            if len(parts) != 4:
+            if len(parts) != 5:
                 print("Invalid POSE:", message)
                 send_reply("ERR:INVALID_POSE")
                 continue
@@ -122,6 +154,7 @@ while True:
                 x = float(parts[1])
                 y = float(parts[2])
                 z = float(parts[3])
+                r = float(parts[4])
 
             except ValueError:
                 print("Invalid coordinates:", message)
@@ -131,11 +164,14 @@ while True:
             print("X =", x)
             print("Y =", y)
             print("Z =", z)
+            print("r  =", r, "(offset from taught", BASE_ROTATION, ")")
 
-            # Change P1
+            # Change P1. Rotation is BASE_ROTATION + r, never P1's current
+            # value -- see BASE_ROTATION's own comment for why.
             P1["pose"][0] = x
             P1["pose"][1] = y
             P1["pose"][2] = z
+            P1["pose"][ROTATION_POSE_INDEX] = BASE_ROTATION + r
 
             print("Moving P1:", P1["pose"])
             result = MovL(P1, {"user": 0, "v": 60})

@@ -26,7 +26,7 @@ def main():
         service = VisionService(camera, detector, tracker)
 
         robot = RobotClient(config.robot)
-        controller = PickAndPlaceController(robot, config.robot, config.place_targets)
+        controller = PickAndPlaceController(robot, config.robot, config.place_targets, config.target_tilt)
 
         service.start()
         try:

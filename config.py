@@ -51,6 +51,13 @@ class Config:
     class_aliases: Dict[str, str] = field(default_factory=dict)
     hue_ranges: Dict[str, List[Tuple[int, int]]] = field(default_factory=lambda: dict(DEFAULT_HUE_RANGES))
     robot: RobotSettings = field(default_factory=RobotSettings)
+    # Per-shape "already correct" tilt, degrees -- see vision/orientation.py's
+    # tilt-from-level definition. Defaults to 0 (level) for any shape not
+    # listed, which is confirmed right for Square but NOT yet confirmed for
+    # Triangle (an apex-up triangle reads ~60 degrees under this definition,
+    # not 0 -- see README's "Orientation, precisely"). Check against the
+    # physical slot and set the real value here once known.
+    target_tilt: Dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str = DEFAULT_CONFIG_PATH) -> "Config":
@@ -85,4 +92,5 @@ class Config:
             class_aliases=data.get("class_aliases", {}),
             hue_ranges=hue_ranges,
             robot=RobotSettings(**robot_data),
+            target_tilt=data.get("target_tilt", {}),
         )

@@ -4,10 +4,17 @@ TCP client for server_script/dobot_tcp_server.py (runs on the Dobot).
 Protocol: newline-terminated text; every message gets exactly one reply
 line.
     Connection Established -> READY
-    POSE,x,y,z             -> ACK:POSE
+    POSE,x,y,z,r            -> ACK:POSE
     DO,index,0|1           -> ACK:DO
     CLOSE                  -> ACK:CLOSE   (ends the robot script)
     anything invalid       -> ERR:...
+
+r is a rotation OFFSET in degrees, not an absolute angle -- the server
+adds it to however P1 was originally taught (see that script's own
+comments for why: this client never reads back P1's actual taught
+rotation, so it can only ever say "turn r degrees from your own
+reference," never "go to this absolute world angle"). r=0 always means
+"whatever DobotStudio Pro's P1 point was taught with."
 
 The connection is persistent. The robot script keeps running across
 clients, so a pick cycle must not open and close a socket each time; the
@@ -49,8 +56,10 @@ class RobotClient:
                 self.close(notify=False)  # nothing to notify: the socket is already broken
                 raise
 
-    def move_to(self, x, y, z) -> str:
-        return self._request(f"POSE,{x},{y},{z}")
+    def move_to(self, x, y, z, r=0) -> str:
+        """r: rotation OFFSET in degrees from P1's taught orientation (see
+        module docstring) -- 0 means "leave it exactly as taught"."""
+        return self._request(f"POSE,{x},{y},{z},{r}")
 
     def set_output(self, index: int, on: bool) -> str:
         return self._request(f"DO,{index},{1 if on else 0}")

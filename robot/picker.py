@@ -12,7 +12,7 @@ class Robot(Protocol):
     """What the controller needs from a robot; RobotClient satisfies it,
     and so can a test double."""
     def session(self): ...
-    def move_to(self, x, y, z) -> str: ...
+    def move_to(self, x, y, z, r=0) -> str: ...
     def set_output(self, index: int, on: bool) -> str: ...
 
 
@@ -22,10 +22,16 @@ class PickInProgress(RuntimeError):
 
 class PickAndPlaceController:
     def __init__(self, robot: Robot, settings: RobotSettings,
-                 place_targets: Dict[str, Optional[Tuple[float, float]]]):
+                 place_targets: Dict[str, Optional[Tuple[float, float]]],
+                 target_tilt: Optional[Dict[str, float]] = None):
         self._robot = robot
         self._settings = settings
         self._place_targets = place_targets
+        # Per-shape "already correct" tilt (degrees) -- see
+        # vision/orientation.py. Defaults to 0 (level) for any shape not
+        # listed. See config.py's Config.target_tilt for why this default
+        # isn't yet confirmed right for every shape.
+        self._target_tilt = target_tilt or {}
         self._busy = threading.Lock()
 
     def run_cycle(self, detections: Union[Dict[int, DetectedShape], List[DetectedShape]],
@@ -71,27 +77,40 @@ class PickAndPlaceController:
             print(f"Skipping {shape.shape_name}: no place target in config.json")
             return {**result, "status": "skipped_no_target"}
 
+        # How far to rotate the object (while still holding it) so it ends
+        # up at this shape's target tilt instead of wherever it currently
+        # sits. E.g. orientation=20, target=0 -> correction=-20: rotate the
+        # wrist -20 degrees to bring it from 20 down to level.
+        correction = self._target_tilt.get(shape.shape_name, 0.0) - shape.orientation
         print(
-            f"Picking {shape.shape_name} ({shape.color}) at {shape.robot} "
-            f"(orientation {shape.orientation:.2f} deg -- not applied to the robot)"
+            f"Picking {shape.shape_name} ({shape.color}) at {shape.robot}, orientation "
+            f"{shape.orientation:.2f} deg -- rotating {correction:.2f} deg before placing"
         )
-        self._pick_and_place(shape.robot, target)
+        self._pick_and_place(shape.robot, target, correction)
         if on_placed is not None and object_id is not None:
             on_placed(object_id)
         return {**result, "status": "placed"}
 
-    def _pick_and_place(self, pick_xy, place_xy) -> None:
-        self._touch(pick_xy, suction_on=True)
-        self._touch(place_xy, suction_on=False)
-        self._robot.move_to(*self._settings.home_xy, self._settings.z_safe)
+    def _pick_and_place(self, pick_xy, place_xy, correction: float) -> None:
+        # Pick at the wrist's default (taught) rotation -- a suction cup
+        # grips a flat top regardless of approach angle, so there's no need
+        # to pre-align with the object; it comes up still at its own
+        # as-found tilt, now rigidly attached to the gripper. Rotating by
+        # `correction` on the way to the place point (while still holding
+        # it) is what actually reorients the object in the world -- moving
+        # the arm around at a fixed wrist angle does nothing to it.
+        self._touch(pick_xy, suction_on=True, r=0)
+        self._touch(place_xy, suction_on=False, r=correction)
+        # Reset the wrist back to default before the next cycle's pick.
+        self._robot.move_to(*self._settings.home_xy, self._settings.z_safe, 0)
 
-    def _touch(self, xy, suction_on: bool) -> None:
-        """Descend onto xy, switch suction, wait for the vacuum to grip or
-        release, then rise clear again."""
+    def _touch(self, xy, suction_on: bool, r: float) -> None:
+        """Descend onto xy at rotation r, switch suction, wait for the
+        vacuum to grip or release, then rise clear again."""
         s = self._settings
         x, y = xy
-        self._robot.move_to(x, y, s.z_safe)
-        self._robot.move_to(x, y, s.z_pick)
+        self._robot.move_to(x, y, s.z_safe, r)
+        self._robot.move_to(x, y, s.z_pick, r)
         self._robot.set_output(s.suction_do_index, suction_on)
         time.sleep(s.suction_settle_seconds)
-        self._robot.move_to(x, y, s.z_safe)
+        self._robot.move_to(x, y, s.z_safe, r)

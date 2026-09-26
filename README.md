@@ -63,6 +63,7 @@ Open `http://<pi-ip>:5000`. The page shows the live feed with detections. **Pick
 - `class_aliases`: model label to shape name, e.g. `"Rectangle": "Square"`.
 - `calibration`: matching `image_points` and `robot_points`. Redo this whenever the camera or table moves.
 - `place_targets`: robot x,y where each shape is dropped. **Only shapes listed here are detected**, so this is how the two unassigned shapes are ignored. A shape set to `null` is detected but not picked.
+- `target_tilt`: per-shape "already correct" tilt in degrees (see "Orientation, precisely" below). Defaults to 0 for any shape not listed.
 - `hue_ranges`: optional overrides for color names (OpenCV hue, 0-179).
 - `robot`: host, port, timeout, home position, `z_safe`, `z_pick`, suction output index and settle time.
 
@@ -74,9 +75,11 @@ Text lines over TCP, and each message gets one reply.
 | Send | Reply |
 |---|---|
 | `Connection Established` | `READY` |
-| `POSE,x,y,z` | `ACK:POSE` |
+| `POSE,x,y,z,r` | `ACK:POSE` |
 | `DO,index,0/1` | `ACK:DO` |
 | `CLOSE` | `ACK:CLOSE` (ends the robot script) |
+
+`r` is a rotation **offset in degrees from however `P1` was taught**, not an absolute angle -- the server adds it to `P1`'s original rotation (captured once at startup), so `r=0` always means "exactly as taught," and it never drifts across repeated cycles.
 
 Errors come back as `ERR:...` and raise `RobotCommandError`.
 
@@ -94,15 +97,19 @@ Runs the real pipeline (same `Detector` main.py uses) on one saved image, no cam
 
 ## Orientation, precisely
 
-`orientation` is **not** a compass angle -- it's how far (in degrees) the object's current topmost two corners are from level, wrapped to `(-90, 90]`. 0 means they're already level. Since each shape's drop slot sits in one fixed spot, rotating by `-orientation` before placing is meant to be exactly the correction needed. See `vision/orientation.py`'s module docstring for the full reasoning.
+`orientation` is **not** a compass angle -- it's how far (in degrees) the object's current topmost two corners are from level, wrapped to `(-90, 90]`. 0 means they're already level. See `vision/orientation.py`'s module docstring for the full reasoning.
 
-This is confirmed for **Square** (axis-aligned reads ~0°, matching intuition). For **Triangle**, "level" under this definition means an *edge* is on top (apex hanging down) -- a triangle sitting apex-up, which is how it naturally sits on the table, reads a large tilt (~60°) instead of 0. Whether that matches what your physical slot needs hasn't been confirmed against the real board yet -- check this before relying on the number for an actual placement correction.
+This is confirmed for **Square** (axis-aligned reads ~0°, matching intuition). For **Triangle**, "level" under this definition means an *edge* is on top (apex hanging down) -- a triangle sitting apex-up, which is how it naturally sits on the table, reads a large tilt (~60°) instead of 0. Whether that matches what your physical slot needs hasn't been confirmed against the real board yet -- if not, set that shape's real value in `config.json`'s `target_tilt`.
 
 The live GUI and `scripts/detect_and_orient.py`'s output both draw this directly: a yellow line between the two real corners used, a gray horizontal reference line showing "level", and the angle as text -- not just a number.
 
+**Applying it:** `robot/picker.py` computes `correction = target_tilt[shape] - orientation` and rotates the tool by that many degrees while carrying the object -- pick happens at the tool's default rotation (a suction cup doesn't care about approach angle), then the move to the place point carries `r=correction`, and the final move home resets `r` to 0 for the next cycle. See `PickAndPlaceController._pick_and_place`.
+
 ## Known limits
 
-- Orientation is measured but not sent to the robot yet, because `POSE` carries only x, y and z. See "Orientation, precisely" above for what the number itself means.
+- **Two things about the rotation above are unverified on real hardware** (can't be tested without the physical robot):
+  1. Which element of `P1["pose"]` is the tool's yaw. `server_script/dobot_tcp_server.py` assumes index 5 (`[x, y, z, rx, ry, rz]`) and prints the real `P1["pose"]` at startup so this is easy to check.
+  2. Whether a positive `orientation` reading from the camera and a positive `r` sent to the robot actually rotate the same direction. Test with one object at a known tilt; if it comes out backwards, negate `correction` in `robot/picker.py`.
 - `/pick` picks everything tracked, with no selection by shape or color.
 - Restart the robot script in DobotStudio Pro after any `CLOSE`.
 - `models/yolo26n_best.onnx` is an experimental export sitting alongside the trained `.pt` file -- benchmarked faster (~2x on a test machine, not the Pi), but `config.json` still points at the `.pt` file; nothing currently uses the `.onnx` one.
