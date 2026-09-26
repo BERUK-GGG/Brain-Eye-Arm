@@ -31,7 +31,7 @@ class DetectedShape:
     area: float
     color: str = ""             # "" if unresolved
     confidence: float = 0.0     # YOLO confidence
-    # The two corners `orientation` was measured between (top, bottom),
+    # The two corners `orientation` was measured between (bottom, next),
     # full-frame pixel coordinates -- for drawing the real measured edge.
     # None for a shape with no meaningful orientation (a circle) or when
     # measurement failed.

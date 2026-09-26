@@ -95,7 +95,7 @@ class Detector:
         # corner finder (e.g. a circle) or segmentation found nothing usable.
         raw_angle = measurement.angle if measurement.angle is not None else 0.0
         orientation_points = (
-            (measurement.top_point, measurement.bottom_point) if measurement.top_point is not None else None
+            (measurement.bottom_point, measurement.next_point) if measurement.bottom_point is not None else None
         )
 
         return DetectedShape.create(

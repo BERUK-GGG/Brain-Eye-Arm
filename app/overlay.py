@@ -40,23 +40,23 @@ def draw_overlay(frame: np.ndarray, tracked: Dict[int, DetectedShape]) -> np.nda
 
 def _draw_orientation_edge(annotated: np.ndarray, shape: DetectedShape) -> None:
     """Draws the ACTUAL two corners orientation was measured between (the
-    object's current topmost corner and bottommost corner), plus a
-    horizontal reference line at "top"'s height, running out to sit
-    directly above (or below) "bottom" -- so the angle between the two
+    object's current bottommost corner and next-bottommost corner), plus
+    a horizontal reference line at "bottom"'s height, running out to sit
+    directly above (or below) "next" -- so the angle between the two
     lines drawn is, visibly, the reported number, and the gap between
-    the reference line's end and the bottommost corner itself is the
-    vertical distance still needed to make them level. A line from the
-    centroid at an abstract angle would look similar but wouldn't
+    the reference line's end and the next-bottommost corner itself is
+    the vertical distance still needed to make them level. A line from
+    the centroid at an abstract angle would look similar but wouldn't
     correspond to anything actually measured; this draws the real
     geometry instead."""
-    top, bottom_point = shape.orientation_points
-    top = (int(top[0]), int(top[1]))
+    bottom_point, next_point = shape.orientation_points
     bottom = (int(bottom_point[0]), int(bottom_point[1]))
+    nxt = (int(next_point[0]), int(next_point[1]))
 
-    cv2.line(annotated, top, (bottom[0], top[1]), GRAY, 1)         # reference: level, above/below "bottom"
-    cv2.line(annotated, top, bottom, YELLOW, 2)                    # measured: current top-to-bottom edge
-    cv2.circle(annotated, top, 4, CYAN, -1)                        # topmost corner
-    cv2.circle(annotated, bottom, 4, MAGENTA, -1)                  # bottommost corner
+    cv2.line(annotated, bottom, (nxt[0], bottom[1]), GRAY, 1)      # reference: level, above/below "next"
+    cv2.line(annotated, bottom, nxt, YELLOW, 2)                    # measured: current bottom edge
+    cv2.circle(annotated, bottom, 4, CYAN, -1)                     # bottommost corner
+    cv2.circle(annotated, nxt, 4, MAGENTA, -1)                     # next-bottommost corner
 
 
 def _label(shape: DetectedShape) -> str:

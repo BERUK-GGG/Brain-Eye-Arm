@@ -38,26 +38,23 @@
 # this loop needs to re-create the socket on error instead of just
 # continuing -- tell me and I'll change it to do that.
 #
-# TWO MORE OPEN QUESTIONS, THIS TIME ABOUT ROTATION
+# ROTATION -- CONFIRMED ON HARDWARE
 # ------------------------------------------------------
 # POSE now carries a 4th value, r -- see robot/client.py's docstring for
 # why it's an OFFSET from however P1 was taught, not an absolute angle.
 # Applying that offset means knowing which element of P1["pose"] is the
 # tool's yaw (rotation about the vertical axis a top-down suction pick
 # actually needs). ROTATION_POSE_INDEX below assumes a 6-axis pose,
-# [x, y, z, rx, ry, rz], with yaw last (index 5) -- correct for a Magician
-# E6. The startup print below shows the real P1["pose"] the first time
-# this runs; if its length or the rotating element isn't what's expected,
-# fix ROTATION_POSE_INDEX to match before trusting any rotation command.
+# [x, y, z, rx, ry, rz], with yaw last (index 5) -- confirmed correct for
+# this Magician E6 by an actual pick-and-place cycle. The startup print
+# below still shows the real P1["pose"] every run, in case that ever
+# changes (a different taught point, a different robot).
 #
-# Separately: whether a POSITIVE r here actually turns the tool the same
-# direction (and by the same number of degrees) as a positive orientation
-# reading from the camera is UNVERIFIED -- the vision side and the robot
-# side were never calibrated against each other for rotation (see
-# README's "Orientation, precisely"), only for x/y position. Test this
-# with one object at a known tilt before trusting it for a real pick: if
-# the placed object comes out rotated the wrong way, negate r on the
-# client side (robot/picker.py's `correction`), not here.
+# The direction/sign question (does a positive r rotate the same way as
+# a positive orientation reading from the camera?) is also confirmed --
+# it did NOT, by default, so the fix lives on the vision side:
+# vision/orientation.py's angle_between() negates its result. Nothing
+# here needed to change for that.
 
 import time
 
