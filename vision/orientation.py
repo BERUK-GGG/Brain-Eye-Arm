@@ -7,11 +7,16 @@ DEFINITION: the drop slot for each shape sits in one fixed place with
 one fixed required orientation, so orientation doesn't need to be an
 abstract absolute angle -- it only needs to be "how far this object is
 from the pose it must be placed in." That pose is defined as: the
-object's current topmost two corners are level (the same row). So:
+object's current topmost and bottommost corners are level (the same
+row) -- top/bottom rather than the two topmost, because the camera's
+image is upside-down relative to the physical scene, so the pair that
+actually corresponds to a real top/bottom edge of the object is the
+vertical extremes, not whichever two corners happen to be highest in
+the (inverted) pixel frame. So:
 
   1. Find the shape's own corners (4 for a Square, 3 for a Triangle --
      we already know which from YOLO's class label).
-  2. Take the topmost corner and the next-topmost corner.
+  2. Take the topmost corner and the bottommost corner.
   3. The angle of the line between them, relative to horizontal, IS the
      orientation: 0 means they're already level (nothing to correct).
      Rotating the object by -orientation before placing brings it level.
@@ -20,7 +25,7 @@ A line only has meaning mod 180 degrees (flipped, it's the same line),
 so this is always wrapped into (-90, 90].
 
 Measurement carries the actual two corner points used (top_point,
-next_point, in full-frame pixel coordinates), not just the resulting
+bottom_point, in full-frame pixel coordinates), not just the resulting
 angle -- so a caller can draw the real edge that was measured instead of
 a synthetic direction indicator.
 
@@ -49,7 +54,7 @@ class Measurement:
         segmentation found nothing usable.
     centroid: full-frame pixel centroid (falls back to the YOLO box centre
         if segmentation fails, so position is usable even without an angle).
-    top_point, next_point: the two corners angle was measured between, in
+    top_point, bottom_point: the two corners angle was measured between, in
         full-frame pixel coordinates -- None together with angle if there
         wasn't one. For drawing the real measured edge, not a stand-in.
     mask: foreground mask of the crop, or None if segmentation failed.
@@ -58,7 +63,7 @@ class Measurement:
     angle: Optional[float]
     centroid: Point
     top_point: Optional[Point] = None
-    next_point: Optional[Point] = None
+    bottom_point: Optional[Point] = None
     mask: Optional[np.ndarray] = None
     crop_box: Optional[Tuple[int, int, int, int]] = None
 
@@ -100,13 +105,14 @@ CORNER_FINDERS = {
 }
 
 
-def topmost_pair(corners: np.ndarray) -> Tuple[Point, Point]:
-    """The topmost corner and the next-topmost corner (by row, then
-    column to break exact ties deterministically -- leftmost wins, so
-    the reading doesn't flicker between frames when a shape is already
-    exactly level)."""
-    ordered = sorted(corners.tolist(), key=lambda p: (p[1], p[0]))
-    return tuple(ordered[0]), tuple(ordered[1])
+def top_bottom_pair(corners: np.ndarray) -> Tuple[Point, Point]:
+    """The topmost corner and the bottommost corner (each tie broken by
+    picking the leftmost, so the reading doesn't flicker between frames
+    when two corners share a row)."""
+    pts = corners.tolist()
+    top = min(pts, key=lambda p: (p[1], p[0]))       # smallest row; ties -> smallest column
+    bottom = min(pts, key=lambda p: (-p[1], p[0]))   # largest row; ties -> smallest column
+    return tuple(top), tuple(bottom)
 
 
 def angle_between(p1: Point, p2: Point) -> float:
@@ -119,9 +125,9 @@ def angle_between(p1: Point, p2: Point) -> float:
 
 def tilt_from_level(corners: np.ndarray) -> float:
     """Angle (degrees, wrapped to (-90, 90]) of the line between the
-    topmost corner and the next-topmost corner, relative to horizontal --
+    topmost corner and the bottommost corner, relative to horizontal --
     see module docstring."""
-    return angle_between(*topmost_pair(corners))
+    return angle_between(*top_bottom_pair(corners))
 
 
 def measure(full_frame: np.ndarray, bbox_xyxy, shape_name: str, margin: int = 10) -> Measurement:
@@ -153,18 +159,18 @@ def measure(full_frame: np.ndarray, bbox_xyxy, shape_name: str, margin: int = 10
     centroid = (float(xs.mean() + cx1), float(ys.mean() + cy1))
     crop_box = (cx1, cy1, cx2, cy2)
 
-    angle = top_point = next_point = None
+    angle = top_point = bottom_point = None
     finder = CORNER_FINDERS.get(shape_name)
     if finder is not None:
         contour = _largest_contour(mask)
         if contour is not None:
             corners = finder(contour)
             if corners is not None:
-                top, nxt = topmost_pair(corners)
-                angle = angle_between(top, nxt)
+                top, bottom = top_bottom_pair(corners)
+                angle = angle_between(top, bottom)
                 # Crop-local -> full-frame, same offset as the centroid above.
                 top_point = (top[0] + cx1, top[1] + cy1)
-                next_point = (nxt[0] + cx1, nxt[1] + cy1)
+                bottom_point = (bottom[0] + cx1, bottom[1] + cy1)
 
-    return Measurement(angle=angle, centroid=centroid, top_point=top_point, next_point=next_point,
+    return Measurement(angle=angle, centroid=centroid, top_point=top_point, bottom_point=bottom_point,
                         mask=mask, crop_box=crop_box)
