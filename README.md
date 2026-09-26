@@ -30,7 +30,8 @@ robot/
 app/
   service.py       VisionService: camera + detection threads, shared results
   overlay.py       draws detections on a frame
-  web.py           Flask routes: /, /video, /pick
+  selection.py     filter_tracked: which detections match a shape/color pick request
+  web.py           Flask routes: /, /video, /shapes, /pick
 
 server_script/dobot_tcp_server.py   runs inside DobotStudio Pro
 ```
@@ -53,7 +54,9 @@ Robot side:
 python main.py
 ```
 
-Open `http://<pi-ip>:5000`. The page shows the live feed with detections. **Pick & Place** picks every tracked object.
+Open `http://<pi-ip>:5000`. The page shows the live feed with detections, a color dropdown (from `config.json`'s `hue_ranges`, default "Any color"), one **Pick `<Shape>`** button per assigned shape (from `place_targets`), and a **Pick All** button -- both respect whatever color is selected. The page always matches whichever shapes/colors this config is set up for, nothing is hardcoded into it.
+
+`POST /pick` takes an optional JSON body `{"shape": "Triangle", "color": "red"}` -- either field, or an empty/absent body, matches anything. `GET /shapes` and `GET /colors` list what the dropdown/buttons are built from.
 
 `python dobot_tcp_client.py` does a one-shot detect-and-pick to test the robot link. Stop `main.py` first, because the camera allows only one connection.
 
@@ -109,6 +112,5 @@ The live GUI and `scripts/detect_and_orient.py`'s output both draw this directly
 
 ## Known limits
 
-- `/pick` picks everything tracked, with no selection by shape or color.
 - Restart the robot script in DobotStudio Pro after any `CLOSE`.
-- `models/yolo26n_best.onnx` is an experimental export sitting alongside the trained `.pt` file -- benchmarked faster (~2x on a test machine, not the Pi), but `config.json` still points at the `.pt` file; nothing currently uses the `.onnx` one.
+- `models/yolo26n_best.onnx` sits alongside the trained `.pt` file -- confirmed ~2s to ~300ms on the actual Pi (not just this repo's own dev-machine benchmark), but `config.json` still points at the `.pt` file; switching `model_path` to the `.onnx` one is a one-line change whenever you want to take it.

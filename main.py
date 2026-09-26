@@ -1,6 +1,6 @@
 """
 Entry point: wires the camera, detector, tracker, robot link and web UI
-together and serves the live feed with a Pick & Place button.
+together and serves the live feed with per-shape pick buttons.
 
     python main.py        ->  http://<pi-ip>:5000
 """
@@ -30,7 +30,9 @@ def main():
 
         service.start()
         try:
-            create_app(service, controller).run(host="0.0.0.0", port=5000, threaded=True)
+            assigned_shapes = sorted(config.place_targets)
+            known_colors = sorted(config.hue_ranges)
+            create_app(service, controller, assigned_shapes, known_colors).run(host="0.0.0.0", port=5000, threaded=True)
         finally:
             service.stop()
             robot.close()  # sends CLOSE, ending the script on the Dobot
