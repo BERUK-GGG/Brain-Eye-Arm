@@ -22,21 +22,12 @@
 # that already failed (nothing to send to -- the socket's already dead
 # on that side).
 #
-# ONE OPEN QUESTION THIS SCRIPT CAN'T RESOLVE ON ITS OWN
-# --------------------------------------------------------
-# Dobot doesn't document what TCPRead's error code actually means --
-# specifically, whether `err != 0` can mean "no data yet, totally
-# normal, keep waiting" (in which case looping back is obviously
-# correct), or whether it can mean "this socket handle is now dead"
-# (in which case looping back just spins on the same dead handle
-# forever, and a NEW client would never be able to connect again
-# without this script re-running TCPCreate/TCPStart from scratch).
-# Watch this behavior the first time a client disconnects mid-session:
-# if a new client can reconnect and get a "READY" reply afterward, this
-# is fine as written. If a new client can't get through after a
-# disconnect (you just see the same TCPRead error repeating forever),
-# this loop needs to re-create the socket on error instead of just
-# continuing -- tell me and I'll change it to do that.
+# RECONNECTS
+# ----------
+# TCPStart accepts only one client per socket. Looping back on the same
+# handle after a disconnect left it dead, so every later client got
+# "connection reset by peer". On a read error (or EOF) the socket is now
+# destroyed and re-created, so a new client can always connect.
 #
 # ROTATION -- CONFIRMED ON HARDWARE
 # ------------------------------------------------------
@@ -68,10 +59,21 @@ CLOSE_COMMANDS = ("CLOSE", "close_connection")
 # above. Change this if your P1["pose"] isn't [x, y, z, rx, ry, rz].
 ROTATION_POSE_INDEX = 5
 
-err, socket = TCPCreate(True, "192.168.5.1", 6601)
-print("TCPCreate:", err)
+def open_server():
+    """Creates the listening socket and blocks until a client connects.
+    Retries if the port isn't free yet (e.g. right after TCPDestroy)."""
+    while True:
+        err, sock = TCPCreate(True, "192.168.5.1", 6601)
+        print("TCPCreate:", err)
+        if err == 0:
+            break
+        time.sleep(1)
+    print("Waiting for client...")
+    TCPStart(sock, 0)
+    print("Client connected")
+    return sock
 
-TCPStart(socket, 0)
+socket = open_server()
 
 # Captured ONCE, before any POSE message can modify it -- every incoming
 # r is added to THIS, never to whatever P1["pose"] happens to hold at the
@@ -83,29 +85,20 @@ BASE_ROTATION = P1["pose"][ROTATION_POSE_INDEX]
 def send_reply(message):
     TCPWrite(socket, (message + "\n").encode("utf-8"))
 
-last_read_err = 0
-
 while True:
 
     # Wait for data from Python client
     err, recBuf = TCPRead(socket)
 
-    if err != 0:
-        # A read error (e.g. client disconnected) must NOT end the script --
-        # only an explicit CLOSE does (see header). Log once per run of
-        # identical errors so a dead handle doesn't flood the console,
-        # drop any half-received line from the old client, and back off
-        # briefly instead of spinning.
-        if err != last_read_err:
-            print("TCPRead error:", err)
-            last_read_err = err
+    if err != 0 or not recBuf:
+        # Client disconnected (a blocking read only returns empty at EOF).
+        # This must NOT end the script -- only an explicit CLOSE does (see
+        # header). The old handle can't accept a new client, so tear it
+        # down and listen again; drop any half-received line with it.
+        print("TCPRead error:", err, "-- client gone, re-listening")
+        TCPDestroy(socket)
         buffer = ""
-        time.sleep(0.1)
-        continue
-
-    last_read_err = 0
-
-    if not recBuf:
+        socket = open_server()
         continue
 
     print("Received:", recBuf)
