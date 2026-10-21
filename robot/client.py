@@ -86,7 +86,16 @@ class RobotClient:
 
     def _ensure_connected(self) -> None:
         if self._sock is not None:
-            return
+            # A kept-open socket may have gone stale between cycles (robot
+            # script restarted or re-listening). Probe it with the
+            # handshake -- harmless, the arm doesn't move -- and reconnect
+            # if it's dead, rather than failing mid-sequence.
+            try:
+                self._request(HANDSHAKE)
+                return
+            except OSError as e:
+                print(f"Stale robot connection ({e}); reconnecting...")
+                self.close(notify=False)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(self._settings.timeout)
         print(f"Connecting to {self._settings.host}:{self._settings.port}...")
