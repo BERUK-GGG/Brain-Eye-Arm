@@ -16,6 +16,16 @@ class Robot(Protocol):
     def set_output(self, index: int, on: bool) -> str: ...
 
 
+def wrap_to_symmetry(angle: float, symmetry_deg: float) -> float:
+    """Smallest rotation equivalent to `angle` for a shape that repeats
+    every symmetry_deg degrees, in (-symmetry_deg/2, symmetry_deg/2].
+    E.g. a triangle (120) asked to turn 110 turns -10 instead -- it ends
+    up looking the same in the slot either way."""
+    half = symmetry_deg / 2
+    wrapped = (angle + half) % symmetry_deg - half
+    return half if wrapped == -half else wrapped
+
+
 class PickInProgress(RuntimeError):
     """A cycle is already running; only one may drive the arm at a time."""
 
@@ -81,7 +91,8 @@ class PickAndPlaceController:
         # up at this shape's target tilt instead of wherever it currently
         # sits. E.g. orientation=20, target=0 -> correction=-20: rotate the
         # wrist -20 degrees to bring it from 20 down to level.
-        correction = self._target_tilt.get(shape.shape_name, 0.0) - shape.orientation
+        correction = wrap_to_symmetry(
+            self._target_tilt.get(shape.shape_name, 0.0) - shape.orientation, shape.SYMMETRY_DEG)
         print(
             f"Picking {shape.shape_name} ({shape.color}) at {shape.robot}, orientation "
             f"{shape.orientation:.2f} deg -- rotating {correction:.2f} deg before placing"

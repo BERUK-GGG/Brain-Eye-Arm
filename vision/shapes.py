@@ -43,6 +43,12 @@ class DetectedShape:
     # orientation is meaningless there and always 0.
     ROTATIONALLY_SYMMETRIC: ClassVar[bool] = False
 
+    # The shape looks identical after turning this many degrees (120 for
+    # an equilateral triangle, 90 for a square). robot/picker.py wraps its
+    # rotation correction into +/- half of this, so it never turns further
+    # than needed -- whatever angle the tray's slot happens to sit at.
+    SYMMETRY_DEG: ClassVar[float] = 360.0
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         if "shape_name" in cls.__dict__:
@@ -65,6 +71,7 @@ class DetectedShape:
 
 class Triangle(DetectedShape):
     shape_name = "Triangle"
+    SYMMETRY_DEG = 120.0
 
 
 class Circle(DetectedShape):
@@ -74,3 +81,4 @@ class Circle(DetectedShape):
 
 class Square(DetectedShape):
     shape_name = "Square"
+    SYMMETRY_DEG = 90.0

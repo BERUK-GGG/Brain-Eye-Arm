@@ -29,6 +29,13 @@
 # "connection reset by peer". On a read error (or EOF) the socket is now
 # destroyed and re-created, so a new client can always connect.
 #
+# P1 MUST EXIST
+# -------------
+# Teach a point named P1 in DobotStudio Pro before running this. Without
+# it the script crashes right after a client connects (at BASE_ROTATION
+# below), and the client just sees "connection reset by peer" on the
+# handshake -- which looks like a network problem but isn't.
+#
 # ROTATION -- CONFIRMED ON HARDWARE
 # ------------------------------------------------------
 # POSE now carries a 4th value, r -- see robot/client.py's docstring for
