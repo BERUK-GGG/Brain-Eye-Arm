@@ -1,6 +1,6 @@
 # Brain-Eye-Arm
 
-INA700 project: a Basler camera and a YOLO model on a Raspberry Pi 4 find red shapes (Triangle, Circle, Square). A Dobot Magician E6 picks each one with suction and places it in its slot on the board.
+INA700 project: a Basler camera and a YOLO model on a Raspberry Pi 4 find shapes (Triangle, Circle, Square). A Dobot Magician E6 picks each one with suction and places it in its slot on the board.
 
 ## How it works
 
