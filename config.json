@@ -1,5 +1,5 @@
 {
-  "model_path": "models/yolo26n_best.pt",
+  "model_path": "models/yolo26n_best.onnx",
   "yolo_conf_threshold": 0.5,
   "orientation_margin": 10,
   "class_aliases": {

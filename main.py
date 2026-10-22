@@ -35,7 +35,7 @@ def main():
             create_app(service, controller, assigned_shapes, known_colors).run(host="0.0.0.0", port=5000, threaded=True)
         finally:
             service.stop()
-            robot.close()  # sends CLOSE, ending the script on the Dobot
+            #robot.close()  # sends CLOSE, ending the script on the Dobot
 
 
 if __name__ == "__main__":
