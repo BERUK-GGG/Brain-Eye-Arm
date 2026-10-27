@@ -31,8 +31,7 @@ app/
   service.py       VisionService: camera + detection threads, shared results
   overlay.py       draws detections on a frame
   selection.py     filter_tracked: which detections match a shape/color pick request
-  web.py           Flask routes for the HMI: /, /video, /detections, /status, /logs, /shapes, /colors, /pick
-  logbuffer.py     LogBuffer: keeps printed lines for the HMI's log panel
+  web.py           Flask routes for the HMI: /, /video, /detections, /status, /history, /shapes, /colors, /pick
   templates/, static/   the HMI page (index.html, hmi.css, hmi.js)
 
 server_script/dobot_tcp_server.py   runs inside DobotStudio Pro
@@ -165,7 +164,7 @@ Open `http://<pi-ip>:5000` (the Pi's Wi-Fi address). The operator HMI has five a
 - **Live camera**: the feed with each part's ID, color, shape, confidence and measured orientation edge drawn on it.
 - **Pick command**: shape and color dropdowns (shapes from `place_targets`, colors from the fixed palette in `vision/color.py`). The button picks every tracked part that matches, and shows how many that is. The outcome of the last pick is shown below it.
 - **Detected parts**: one row per tracked part (ID, shape, color, confidence, angle, robot x/y), with a **Pick** button to pick just that part. Rows matching the current selection are highlighted.
-- **Log**: everything the app prints (robot commands and replies, pick results, errors in red), live.
+- **Pick history**: one row per handled part, newest first: time, ID, color and shape, where it was picked, its measured angle, how far it was rotated, where it was placed, and the result (placed / skipped / failed, with the error). Totals are shown in the header, and **Export CSV** downloads the table. The history covers the current run of `main.py` only.
 
 The buttons are locked while a cycle runs, from any browser.
 
@@ -176,7 +175,7 @@ API, for scripting:
 | `POST /pick` | Optional JSON body: `{"shape": "Triangle", "color": "red"}` (either field, or none, matches anything) or `{"object_id": 3}` for one part. |
 | `GET /detections` | Tracked parts. |
 | `GET /status` | Camera/vision timings, robot link state, last pick outcome. |
-| `GET /logs?after=N` | Printed lines numbered after `N`. |
+| `GET /history?after=N` | Handled parts (and failed requests) numbered after `N`. |
 | `GET /shapes`, `GET /colors` | What the dropdowns are built from. |
 
 `python -m stand_alone_scripts.dobot_tcp_client` does a one-shot detect-and-pick to test the robot link. Stop `main.py` first, because the camera allows only one connection. It sends `CLOSE` at the end, so restart the robot script afterwards.

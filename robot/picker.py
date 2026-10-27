@@ -49,10 +49,13 @@ class PickAndPlaceController:
         return self._busy.locked()
 
     def run_cycle(self, detections: Union[Dict[int, DetectedShape], List[DetectedShape]],
-                  on_placed: Optional[Callable[[int], None]] = None) -> List[dict]:
+                  on_placed: Optional[Callable[[int], None]] = None,
+                  on_result: Optional[Callable[[dict], None]] = None) -> List[dict]:
         """Picks and places each detection in turn (sorted by pixel position
         for a repeatable order) and returns one result dict per shape:
-            {"object_id": 3, "shape": "Triangle", "color": "red", "status": "placed"}
+            {"object_id": 3, "shape": "Triangle", "color": "red", "status": "placed",
+             "pick": (x, y), "orientation": 12.0, "place": (x, y), "rotation": -12.0}
+        (pick/orientation always; place/rotation only when placed)
         status is "placed" or "skipped_no_target" (no place target in
         config.json, so nowhere to put it down).
 
@@ -60,6 +63,8 @@ class PickAndPlaceController:
         output), or a plain list (object_id is then None throughout).
         on_placed(object_id) fires right after each shape is placed, not
         batched at the end, so the caller can stop tracking it at once.
+        on_result(result) likewise fires per shape as soon as it's handled,
+        so results survive a later failure in the same cycle.
 
         Raises PickInProgress if a cycle is already running. Communication
         errors propagate; the robot client drops the connection so the next
@@ -79,12 +84,15 @@ class PickAndPlaceController:
             with self._robot.session():
                 for object_id, shape in sorted(items, key=lambda item: item[1].pixel):
                     results.append(self._handle(object_id, shape, on_placed))
+                    if on_result is not None:
+                        on_result(results[-1])
             return results
         finally:
             self._busy.release()
 
     def _handle(self, object_id, shape: DetectedShape, on_placed) -> dict:
-        result = {"object_id": object_id, "shape": shape.shape_name, "color": shape.color}
+        result = {"object_id": object_id, "shape": shape.shape_name, "color": shape.color,
+                  "pick": shape.robot, "orientation": shape.orientation}
 
         target = self._place_targets.get(shape.shape_name)
         if target is None:
@@ -104,7 +112,7 @@ class PickAndPlaceController:
         self._pick_and_place(shape.robot, target, correction)
         if on_placed is not None and object_id is not None:
             on_placed(object_id)
-        return {**result, "status": "placed"}
+        return {**result, "status": "placed", "place": target, "rotation": correction}
 
     def _pick_and_place(self, pick_xy, place_xy, correction: float) -> None:
         # Pick at the wrist's default (taught) rotation -- a suction cup

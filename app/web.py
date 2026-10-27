@@ -1,11 +1,12 @@
+import itertools
 import threading
 import time
+from collections import deque
 from typing import List, Optional
 
 import cv2
 from flask import Flask, Response, jsonify, render_template, request
 
-from app.logbuffer import LogBuffer
 from app.overlay import draw_overlay
 from app.selection import filter_tracked
 from app.service import VisionService
@@ -14,21 +15,27 @@ from robot.picker import PickAndPlaceController, PickInProgress
 
 STREAM_JPEG_QUALITY = 70    # 0-100; lower = smaller frames, more visible artifacts
 STREAM_FPS = 15
+HISTORY_LENGTH = 500        # picked objects kept for the HMI's history table (this run only)
 
 
 def create_app(service: VisionService, controller: PickAndPlaceController, assigned_shapes: List[str],
-                known_colors: List[str] = (), robot: Optional[RobotClient] = None,
-                logs: Optional[LogBuffer] = None) -> Flask:
+                known_colors: List[str] = (), robot: Optional[RobotClient] = None) -> Flask:
     """assigned_shapes: the shape names this GUI offers (see config.json's
     place_targets). known_colors: the color names it offers (see
     vision/color.py's PALETTE). Both keep the page in sync with whatever
     this config is actually set up for, rather than hardcoding names into
-    the page. robot and logs are optional: without them the status bar
-    shows no link state and the log panel stays empty."""
+    the page. robot is optional: without it the status bar shows no link
+    state."""
     app = Flask(__name__)
 
     last_pick = {}              # outcome of the most recent /pick, for /status
-    last_pick_lock = threading.Lock()
+    history = deque(maxlen=HISTORY_LENGTH)  # one entry per handled object, plus failed requests
+    entry_numbers = itertools.count(1)
+    state_lock = threading.Lock()           # guards last_pick and history
+
+    def record(entry: dict) -> None:
+        with state_lock:
+            history.append({"seq": next(entry_numbers), "time": time.strftime("%H:%M:%S"), **entry})
 
     def mjpeg_frames():
         """Draws the latest detections onto the FRESHEST frame for every
@@ -76,7 +83,7 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
 
     @app.route("/status")
     def status():
-        with last_pick_lock:
+        with state_lock:
             pick = dict(last_pick)
         return jsonify(
             vision=service.stats(),
@@ -88,11 +95,13 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
             last_pick=pick or None,
         )
 
-    @app.route("/logs")
-    def log_lines():
-        """Printed lines numbered after ?after=N (0 = everything kept)."""
+    @app.route("/history")
+    def pick_history():
+        """Handled objects since startup, oldest first; ?after=N returns
+        only entries numbered after N."""
         after = request.args.get("after", default=0, type=int)
-        return jsonify(lines=logs.since(after) if logs else [])
+        with state_lock:
+            return jsonify(entries=[e for e in history if e["seq"] > after])
 
     @app.route("/pick", methods=["POST"])
     def pick():
@@ -117,7 +126,7 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
             tracked = filter_tracked(snapshot, shape=shape, color=color)
 
         def finish(code: int, **outcome):
-            with last_pick_lock:
+            with state_lock:
                 last_pick.clear()
                 last_pick.update(time=time.strftime("%H:%M:%S"), request=wanted, **outcome)
             return jsonify(**outcome), code
@@ -128,12 +137,13 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
 
         print(f"Pick {wanted}: {len(tracked)} part(s)")
         try:
-            results = controller.run_cycle(tracked, on_placed=service.discard)
+            results = controller.run_cycle(tracked, on_placed=service.discard, on_result=record)
         except PickInProgress as e:
             print(f"Pick {wanted}: refused -- {e}")
             return jsonify(ok=False, error=str(e)), 409  # not recorded: the running cycle's outcome matters
         except Exception as e:
             print(f"ERROR: pick {wanted} failed: {e}")
+            record({"status": "failed", "request": wanted, "error": str(e)})
             return finish(500, ok=False, error=str(e))
         print(f"Pick {wanted}: done -- " + ", ".join(f"{r['shape']} {r['status']}" for r in results))
         return finish(200, ok=True, results=results)

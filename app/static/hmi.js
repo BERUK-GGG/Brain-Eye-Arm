@@ -3,13 +3,14 @@
 const $ = (id) => document.getElementById(id);
 
 const SWATCHES = { red: "#d9413b", green: "#2fa35a", blue: "#2f6fd6", black: "#111", white: "#f2f2f2" };
-const POLL_MS = { parts: 500, status: 1000, logs: 1000 };
+const POLL_MS = { parts: 500, status: 1000, history: 1000 };
 
 const state = {
     parts: [],
     picking: false,     // this page is waiting on a /pick
     robotBusy: false,   // a cycle is running (from any client)
-    logSeq: 0,
+    history: [],        // handled objects since the backend started
+    historySeq: 0,
 };
 
 // ---------- helpers ----------
@@ -110,8 +111,9 @@ async function refreshParts() {
 
 function renderParts() {
     const sel = selection();
+    const filtering = Boolean(sel.shape || sel.color);   // with no filter everything matches; don't light it all up
     const body = $("parts-body");
-    body.replaceChildren(...state.parts.map((p) => el("tr", { class: matches(p, sel) ? "match" : "" },
+    body.replaceChildren(...state.parts.map((p) => el("tr", { class: filtering && matches(p, sel) ? "match" : "" },
         el("td", {}, `#${p.id}`),
         el("td", {}, p.shape),
         el("td", {},
@@ -172,28 +174,67 @@ async function pick(body, label) {
     }
 }
 
-// ---------- log ----------
+// ---------- pick history ----------
 
-function logLevel(text) {
-    if (/error|failed|traceback|exception|refused/i.test(text)) return "err";
-    if (/skipping|nothing currently|stale|warning/i.test(text)) return "warn";
-    if (/: done|connected\.|ready/i.test(text)) return "ok";
-    if (/^(sending|server reply):/i.test(text)) return "dim";
-    return "";
+const fmtXY = (xy) => (xy ? `${xy[0].toFixed(1)}, ${xy[1].toFixed(1)}` : "--");
+const fmtDeg = (deg) => (deg == null ? "--" : `${deg.toFixed(1)}°`);
+const resultTag = (status) => ({ placed: "placed", skipped_no_target: "skipped", failed: "failed" }[status] || status);
+
+function partCell(entry) {
+    if (!entry.shape) return entry.request || "--";   // a failed request, not a single part
+    return [
+        entry.color ? el("span", { class: "swatch", style: `background:${SWATCHES[entry.color] || "transparent"}` }) : "",
+        `${entry.color || "?"} ${entry.shape}`,
+    ];
 }
 
-async function refreshLogs() {
-    const { data } = await getJSON(`/logs?after=${state.logSeq}`);
-    const lines = data.lines || [];
-    if (!lines.length) return;
-    const consoleBox = $("console");
-    for (const line of lines) {
-        consoleBox.append(el("div", { class: `line ${logLevel(line.text)}` },
-            el("span", { class: "t" }, line.time), line.text));
-        state.logSeq = line.seq;
-    }
-    while (consoleBox.childElementCount > 500) consoleBox.firstChild.remove();
-    if ($("autoscroll").checked) consoleBox.scrollTop = consoleBox.scrollHeight;
+async function refreshHistory() {
+    const { data } = await getJSON(`/history?after=${state.historySeq}`);
+    const entries = data.entries || [];
+    if (!entries.length) return;
+    state.history.push(...entries);
+    state.historySeq = entries[entries.length - 1].seq;
+    renderHistory();
+}
+
+function renderHistory() {
+    const body = $("history-body");
+    // Newest first, so the latest pick is always in view.
+    body.replaceChildren(...[...state.history].reverse().map((e) => el("tr", {},
+        el("td", {}, e.time),
+        el("td", {}, e.object_id == null ? "--" : `#${e.object_id}`),
+        el("td", {}, ...[].concat(partCell(e))),
+        el("td", { class: "num" }, fmtXY(e.pick)),
+        el("td", { class: "num" }, fmtDeg(e.orientation)),
+        el("td", { class: "num" }, fmtDeg(e.rotation)),
+        el("td", { class: "num" }, fmtXY(e.place)),
+        el("td", {},
+            el("span", { class: `tag ${resultTag(e.status)}` }, resultTag(e.status)),
+            e.error ? el("span", { class: "error-text" }, e.error) : ""),
+    )));
+    $("history-empty").hidden = state.history.length > 0;
+    $("btn-export").disabled = state.history.length === 0;
+
+    const count = (status) => state.history.filter((e) => e.status === status).length;
+    $("history-summary").textContent =
+        `placed ${count("placed")} · skipped ${count("skipped_no_target")} · failed ${count("failed")}`;
+}
+
+function exportHistory() {
+    const header = ["time", "object_id", "color", "shape", "pick_x", "pick_y", "angle_deg",
+        "rotation_deg", "place_x", "place_y", "result", "error"];
+    const cell = (v) => (v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+    const rows = state.history.map((e) => [
+        e.time, e.object_id, e.color, e.shape ?? e.request, e.pick?.[0], e.pick?.[1], e.orientation,
+        e.rotation, e.place?.[0], e.place?.[1], resultTag(e.status), e.error,
+    ].map(cell).join(","));
+    const blob = new Blob([[header.join(","), ...rows].join("\n") + "\n"], { type: "text/csv" });
+    const link = el("a", {
+        href: URL.createObjectURL(blob),
+        download: `pick_history_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`,
+    });
+    link.click();
+    URL.revokeObjectURL(link.href);
 }
 
 // ---------- start ----------
@@ -209,11 +250,11 @@ $("btn-pick").addEventListener("click", () => {
 });
 $("shape-select").addEventListener("change", renderParts);
 $("color-select").addEventListener("change", renderParts);
-$("btn-clear").addEventListener("click", () => $("console").replaceChildren());
+$("btn-export").addEventListener("click", exportHistory);
 
 tickClock();
 setInterval(tickClock, 1000);
 loadOptions().then(renderParts);
 poll(refreshParts, POLL_MS.parts);
 poll(refreshStatus, POLL_MS.status);
-poll(refreshLogs, POLL_MS.logs);
+poll(refreshHistory, POLL_MS.history);
