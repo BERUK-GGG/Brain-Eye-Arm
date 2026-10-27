@@ -31,7 +31,7 @@ class VisionService:
     """
 
     def __init__(self, camera: Camera, detector: Detector, tracker: CentroidTracker,
-                 grab_fps: float = 15):
+                 grab_fps: float = 10):
         self._camera = camera
         self._detector = detector
         self._tracker = tracker

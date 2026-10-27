@@ -55,6 +55,9 @@ class Config:
     # not 0 -- see README's "Orientation, precisely"). Check against the
     # physical slot and set the real value here once known.
     target_tilt: Dict[str, float] = field(default_factory=dict)
+    # ONNX Runtime threads for inference; 0 = all cores but one (see
+    # Detector.from_config).
+    inference_threads: int = 0
 
     @classmethod
     def load(cls, path: str = DEFAULT_CONFIG_PATH) -> "Config":
@@ -86,4 +89,5 @@ class Config:
             color_thresholds=data.get("color_thresholds", {}),
             robot=RobotSettings(**robot_data),
             target_tilt=data.get("target_tilt", {}),
+            inference_threads=data.get("inference_threads", 0),
         )

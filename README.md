@@ -17,6 +17,7 @@ config.py        loads config.json into typed settings
 vision/
   camera.py        Camera: Basler grab
   detector.py      Detector: YOLO -> shape, orientation, color, robot coords
+  onnx_model.py    OnnxYolo: runs the .onnx model on ONNX Runtime (no torch/ultralytics)
   calibration.py   Calibration: pixel -> robot x,y (homography)
   color.py         ColorClassifier: fixed palette (red, green, blue, black, white)
   orientation.py   tilt-from-level: how far the object's bottommost two corners are from level
@@ -196,7 +197,8 @@ API, for scripting:
 
 ## Config (`config.json`)
 
-- `model_path`, `yolo_conf_threshold`: the trained model and its confidence cutoff. The `.onnx` export is much faster on the Pi than the `.pt` (~300 ms vs ~2 s per frame).
+- `model_path`, `yolo_conf_threshold`: the trained model (must be the `.onnx` export) and its confidence cutoff. The Pi runs it directly on ONNX Runtime (`vision/onnx_model.py`), with no torch or ultralytics installed -- those are only needed for training, in the notebook. To export a newly trained model: `YOLO("best.pt").export(format="onnx", imgsz=320)`.
+- `inference_threads`: optional, ONNX Runtime threads. Default 0 = all cores but one, leaving a core for the camera grab.
 - `class_aliases`: model label to shape name, e.g. `"Rectangle": "Square"`.
 - `calibration`: matching `image_points` and `robot_points`. See setup step 4.
 - `place_targets`: robot x,y where each shape is dropped. **Only shapes listed here are detected**, so this is how the two unassigned shapes are ignored. A shape set to `null` is detected but not picked.

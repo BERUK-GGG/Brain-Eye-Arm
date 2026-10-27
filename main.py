@@ -7,6 +7,7 @@ controls and pick history.
 """
 
 import logging
+import sys
 
 from app.service import VisionService
 from app.web import create_app
@@ -23,6 +24,11 @@ POLLED_ROUTES = ("/detections", "/status", "/history")
 
 
 def main():
+    # Flush every printed line at once, even when output goes to a pipe,
+    # file or service log (otherwise Python holds it back in a large buffer
+    # and the detection/robot lines show up late, in bursts, or not at all).
+    sys.stdout.reconfigure(line_buffering=True)
+
     # The HMI polls these several times a second; keep them out of the
     # request log so it still shows the requests that matter (e.g. /pick).
     logging.getLogger("werkzeug").addFilter(

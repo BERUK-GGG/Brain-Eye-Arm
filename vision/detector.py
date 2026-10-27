@@ -6,14 +6,16 @@ from config import Config
 from vision import orientation
 from vision.calibration import Calibration
 from vision.color import ColorClassifier
+from vision.onnx_model import OnnxYolo
 from vision.shapes import DetectedShape, SHAPE_REGISTRY
 
 
 class Detector:
     """YOLO inference -> shape / orientation / color / robot coordinates for
     one frame. Collaborators are injected, so it can be built around any
-    model exposing `.predict()` and `.names`; use from_config() for the real
-    thing. Build once and reuse -- loading the model is far too slow to
+    model exposing `.predict(img, conf_threshold)` (returning objects with
+    class_id / confidence / xyxy) and `.names`; use from_config() for the
+    real thing (vision/onnx_model.py). Build once and reuse -- loading the model is far too slow to
     repeat per frame."""
 
     def __init__(self, model, calibration: Calibration, color_classifier: ColorClassifier,
@@ -32,23 +34,24 @@ class Detector:
 
     @classmethod
     def from_config(cls, config: Config) -> "Detector":
-        from ultralytics import YOLO
-        import torch
-
+        if not config.model_path.endswith(".onnx"):
+            raise ValueError(
+                f"model_path must point to an exported .onnx model, got {config.model_path}. "
+                f"Export it with ultralytics: YOLO('best.pt').export(format='onnx', imgsz=320)."
+            )
         if not os.path.exists(config.model_path):
             raise FileNotFoundError(
-                f"YOLO weights not found at {config.model_path}. Train a model, download "
-                f"best.pt, and place it there (or update config.json's model_path)."
+                f"ONNX model not found at {config.model_path} (see config.json's model_path)."
             )
 
-        # Leave one core free for the camera and Flask threads. Letting torch
-        # claim every core made inference ~3x slower once they competed.
-        cpu_count = os.cpu_count() or 1
-        torch.set_num_threads(max(1, cpu_count - 1))
-        print(f"torch using {torch.get_num_threads()} CPU threads (of {cpu_count} available)")
+        # Inference threads: one core is left for the camera grab (a
+        # full-resolution colour conversion 10x a second). Giving inference
+        # every core once made it ~3x slower when the two competed; set
+        # inference_threads in config.json to override.
+        threads = config.inference_threads or max(1, (os.cpu_count() or 1) - 1)
 
         return cls(
-            model=YOLO(config.model_path),
+            model=OnnxYolo(config.model_path, threads=threads),
             calibration=Calibration(config.image_points, config.robot_points),
             color_classifier=ColorClassifier(**config.color_thresholds),
             assigned_shapes=config.place_targets.keys(),
@@ -60,7 +63,7 @@ class Detector:
     def detect(self, img) -> List[DetectedShape]:
         """Runs the full pipeline on one BGR frame."""
         start = time.perf_counter()
-        boxes = self._model.predict(img, conf=self._conf_threshold, verbose=False)[0].boxes
+        boxes = self._model.predict(img, self._conf_threshold)
         self.last_inference_seconds = time.perf_counter() - start
         print(f"YOLO inference: {self.last_inference_seconds * 1000:.1f} ms")
 
@@ -81,12 +84,12 @@ class Detector:
         return detections
 
     def _resolve_shape_name(self, box) -> str:
-        raw_label = self._model.names[int(box.cls[0])]
+        raw_label = self._model.names[box.class_id]
         name = raw_label.strip().capitalize()  # tolerate case differences from the label export
         return self._class_aliases.get(name, name)
 
     def _build_shape(self, img, box, shape_name: str) -> DetectedShape:
-        x1, y1, x2, y2 = box.xyxy[0].tolist()
+        x1, y1, x2, y2 = box.xyxy
 
         measurement = orientation.measure(img, (x1, y1, x2, y2), shape_name, self._orientation_margin)
         # 0.0 is a placeholder, not a measurement: either this shape has no
@@ -103,7 +106,7 @@ class Detector:
             robot=self._calibration.pixel_to_robot(*measurement.centroid),
             area=max(0.0, (x2 - x1) * (y2 - y1)),
             color=self._classify_color(img, measurement),
-            confidence=float(box.conf[0]),
+            confidence=box.confidence,
             orientation_points=orientation_points,
         )
 

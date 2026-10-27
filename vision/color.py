@@ -8,6 +8,7 @@ import numpy as np
 PALETTE = ("red", "green", "blue", "black", "white")
 
 _CHANNEL_COLORS = ("blue", "green", "red")  # OpenCV's BGR channel order
+MEDIAN_SAMPLE = 4000  # pixels per median; plenty for a stable color, and far cheaper than all of them
 
 
 class ColorClassifier:
@@ -38,9 +39,8 @@ class ColorClassifier:
         inside, outside = mask > 0, mask == 0
         if not inside.any() or not outside.any():
             return None
-        crop = crop_bgr.astype(np.float32)
-        table = np.maximum(np.median(crop[outside], axis=0), 1.0)
-        normalised = np.median(crop[inside], axis=0) / table
+        table = np.maximum(_median_color(crop_bgr[outside]), 1.0)
+        normalised = _median_color(crop_bgr[inside]) / table
 
         brightest = float(normalised.max())
         if brightest < self._black_max:
@@ -48,3 +48,10 @@ class ColorClassifier:
         if (brightest - float(normalised.min())) / brightest < self._white_max_chroma:
             return "white"
         return _CHANNEL_COLORS[int(normalised.argmax())]
+
+
+def _median_color(pixels: np.ndarray) -> np.ndarray:
+    """Per-channel median of an (N, 3) pixel array, from an evenly spaced
+    sample when N is large."""
+    step = max(1, len(pixels) // MEDIAN_SAMPLE)
+    return np.median(pixels[::step], axis=0).astype(np.float32)

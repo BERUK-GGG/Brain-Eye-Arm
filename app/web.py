@@ -14,7 +14,8 @@ from robot.client import RobotClient
 from robot.picker import PickAndPlaceController, PickInProgress
 
 STREAM_JPEG_QUALITY = 70    # 0-100; lower = smaller frames, more visible artifacts
-STREAM_FPS = 15
+STREAM_FPS = 10
+STREAM_WIDTH = 1280         # px; the page shows it ~1000 px wide, so full 2448 px only cost CPU
 HISTORY_LENGTH = 500        # picked objects kept for the HMI's history table (this run only)
 
 
@@ -39,11 +40,22 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
 
     def mjpeg_frames():
         """Draws the latest detections onto the FRESHEST frame for every
-        send, so the picture stays live even though detections lag."""
+        send, so the picture stays live even though detections lag.
+
+        The frame is downscaled to STREAM_WIDTH before drawing and JPEG
+        encoding (encoding a full 5 MP frame is the single most expensive
+        thing the Pi did per frame, and it competed with inference), and a
+        frame is only re-encoded when the picture or detections changed."""
+        last_frame, last_tracked = None, None
         while True:
             frame = service.latest_frame()
-            if frame is not None:
-                annotated = draw_overlay(frame, service.tracked_snapshot())
+            tracked = service.tracked_snapshot()
+            if frame is not None and (frame is not last_frame or tracked != last_tracked):
+                last_frame, last_tracked = frame, tracked
+                scale = min(1.0, STREAM_WIDTH / frame.shape[1])
+                # LINEAR, not AREA: ~6x cheaper, and indistinguishable at this ~0.5 scale.
+                small = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR) if scale < 1 else frame
+                annotated = draw_overlay(small, tracked, scale=scale)
                 ok, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, STREAM_JPEG_QUALITY])
                 if ok:
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"

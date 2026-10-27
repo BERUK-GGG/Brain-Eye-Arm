@@ -88,8 +88,8 @@ def isolate_object_mask(crop_bgr: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
     border = np.concatenate([lab[:3].reshape(-1, 3), lab[-3:].reshape(-1, 3),
                              lab[:, :3].reshape(-1, 3), lab[:, -3:].reshape(-1, 3)])
-    distance = np.linalg.norm(lab - np.median(border, axis=0), axis=2)
-    distance = np.clip(distance, 0, 255).astype(np.uint8)
+    background_colour = np.median(border, axis=0)
+    distance = np.clip(_colour_distance(lab, background_colour), 0, 255).astype(np.uint8)
 
     otsu, _ = cv2.threshold(distance, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     foreground = distance > max(otsu, MIN_COLOR_DISTANCE)
@@ -102,9 +102,8 @@ def isolate_object_mask(crop_bgr: np.ndarray) -> np.ndarray:
     centre_pixels = lab[centre][foreground[centre]]
     if centre_pixels.size:
         object_colour = np.median(centre_pixels, axis=0)
-        contrast = np.linalg.norm(object_colour - np.median(border, axis=0))
-        similar = np.linalg.norm(lab - object_colour, axis=2) < max(MIN_COLOR_DISTANCE, contrast / 2)
-        foreground &= similar
+        contrast = float(np.linalg.norm(object_colour - background_colour))
+        foreground &= _colour_distance(lab, object_colour) < max(MIN_COLOR_DISTANCE, contrast / 2)
     mask = np.where(foreground, 255, 0).astype(np.uint8)
 
     # Opening sized to the crop wipes out thin pen lines and specks next
@@ -114,6 +113,13 @@ def isolate_object_mask(crop_bgr: np.ndarray) -> np.ndarray:
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     return mask
+
+
+def _colour_distance(lab: np.ndarray, colour: np.ndarray) -> np.ndarray:
+    """Per-pixel Euclidean distance to one colour (several times faster
+    than np.linalg.norm over the channel axis)."""
+    diff = lab - colour
+    return cv2.sqrt(cv2.transform(diff * diff, np.ones((1, 3), np.float32)))
 
 
 def _object_contour(mask: np.ndarray):
