@@ -11,6 +11,7 @@ from config import Config
 from robot.client import RobotClient
 from robot.picker import PickAndPlaceController
 from vision.camera import Camera
+from vision.color import PALETTE
 from vision.detector import Detector
 from vision.tracker import CentroidTracker
 
@@ -31,7 +32,7 @@ def main():
         service.start()
         try:
             assigned_shapes = sorted(config.place_targets)
-            known_colors = sorted(config.hue_ranges)
+            known_colors = list(PALETTE)
             create_app(service, controller, assigned_shapes, known_colors).run(host="0.0.0.0", port=5000, threaded=True)
         finally:
             service.stop()

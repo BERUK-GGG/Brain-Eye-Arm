@@ -1,6 +1,6 @@
 """
 Loads every project-tunable value from config.json (model, calibration,
-place targets, robot link, color ranges), so recalibrating the camera or
+place targets, robot link, color thresholds), so recalibrating the camera or
 moving the robot station means editing config.json, not code.
 """
 
@@ -8,21 +8,11 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
-
-# OpenCV hue is 0-179. Red wraps around the hue circle, hence two ranges.
-DEFAULT_HUE_RANGES: Dict[str, List[Tuple[int, int]]] = {
-    "red": [(0, 10), (160, 179)],
-    "orange": [(11, 22)],
-    "yellow": [(23, 35)],
-    "green": [(36, 85)],
-    "blue": [(86, 130)],
-    "purple": [(131, 159)],
-}
 
 
 @dataclass
@@ -49,7 +39,9 @@ class Config:
     # Model class label -> shape name, for labels the model was trained
     # under a different name (e.g. {"Rectangle": "Square"}).
     class_aliases: Dict[str, str] = field(default_factory=dict)
-    hue_ranges: Dict[str, List[Tuple[int, int]]] = field(default_factory=lambda: dict(DEFAULT_HUE_RANGES))
+    # Optional overrides for ColorClassifier's thresholds (black_max,
+    # white_max_chroma) -- see vision/color.py.
+    color_thresholds: Dict[str, float] = field(default_factory=dict)
     robot: RobotSettings = field(default_factory=RobotSettings)
     # Per-shape "already correct" tilt, degrees -- see vision/orientation.py's
     # tilt-from-level definition. Defaults to 0 (level) for any shape not
@@ -74,10 +66,6 @@ class Config:
             for shape_name, coords in data.get("place_targets", {}).items()
         }
 
-        hue_ranges = dict(DEFAULT_HUE_RANGES)
-        for color, ranges in data.get("hue_ranges", {}).items():
-            hue_ranges[color] = [tuple(r) for r in ranges]
-
         robot_data = dict(data.get("robot", {}))
         if "home_xy" in robot_data:
             robot_data["home_xy"] = tuple(robot_data["home_xy"])
@@ -90,7 +78,7 @@ class Config:
             robot_points=np.array(calibration["robot_points"], dtype=np.float32),
             place_targets=place_targets,
             class_aliases=data.get("class_aliases", {}),
-            hue_ranges=hue_ranges,
+            color_thresholds=data.get("color_thresholds", {}),
             robot=RobotSettings(**robot_data),
             target_tilt=data.get("target_tilt", {}),
         )

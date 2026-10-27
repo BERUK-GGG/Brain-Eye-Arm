@@ -75,21 +75,58 @@ class Measurement:
     crop_box: Optional[Tuple[int, int, int, int]] = None
 
 
-def isolate_object_mask(crop_bgr: np.ndarray) -> np.ndarray:
-    """Saturation/value-based foreground segmentation of a small crop."""
-    hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
-    S = hsv[:, :, 1]
-    V = hsv[:, :, 2]
-    mask = np.where((S > 70) | (V < 30), 255, 0).astype(np.uint8)
+MIN_COLOR_DISTANCE = 25  # Lab distance floor: below this a pixel is never foreground
 
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
+
+def isolate_object_mask(crop_bgr: np.ndarray) -> np.ndarray:
+    """Foreground = pixels that differ from the background, wherever it
+    is. The background colour is taken from the crop's border (mostly
+    table around the object), and the cut-off between object and table
+    is picked per crop by Otsu. Unlike fixed saturation/brightness
+    thresholds, this works for any object colour (black and grey
+    included) and survives lighting and exposure changes."""
+    lab = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    border = np.concatenate([lab[:3].reshape(-1, 3), lab[-3:].reshape(-1, 3),
+                             lab[:, :3].reshape(-1, 3), lab[:, -3:].reshape(-1, 3)])
+    distance = np.linalg.norm(lab - np.median(border, axis=0), axis=2)
+    distance = np.clip(distance, 0, 255).astype(np.uint8)
+
+    otsu, _ = cv2.threshold(distance, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    foreground = distance > max(otsu, MIN_COLOR_DISTANCE)
+
+    # A touching neighbour of another colour also differs from the table,
+    # so it would merge into one blob. Keep only pixels close to the
+    # colour at the crop's centre (YOLO centres the box on the object).
+    h, w = foreground.shape
+    centre = (slice(h * 2 // 5, h * 3 // 5 + 1), slice(w * 2 // 5, w * 3 // 5 + 1))
+    centre_pixels = lab[centre][foreground[centre]]
+    if centre_pixels.size:
+        object_colour = np.median(centre_pixels, axis=0)
+        contrast = np.linalg.norm(object_colour - np.median(border, axis=0))
+        similar = np.linalg.norm(lab - object_colour, axis=2) < max(MIN_COLOR_DISTANCE, contrast / 2)
+        foreground &= similar
+    mask = np.where(foreground, 255, 0).astype(np.uint8)
+
+    # Opening sized to the crop wipes out thin pen lines and specks next
+    # to the object; closing fills small holes (glare, print texture).
+    k = max(5, min(mask.shape) // 25) | 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     return mask
 
 
-def _largest_contour(mask: np.ndarray):
+def _object_contour(mask: np.ndarray):
+    """The contour of the detected object itself: the biggest one
+    containing the crop's centre (YOLO centres the box on the object),
+    so tape or a neighbouring object caught in the crop can't win just
+    by being larger. Falls back to the largest contour."""
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return max(contours, key=cv2.contourArea) if contours else None
+    if not contours:
+        return None
+    centre = (mask.shape[1] / 2.0, mask.shape[0] / 2.0)
+    containing = [c for c in contours if cv2.pointPolygonTest(c, centre, False) >= 0]
+    return max(containing or contours, key=cv2.contourArea)
 
 
 def _square_corners(contour) -> np.ndarray:
@@ -172,7 +209,7 @@ def measure(full_frame: np.ndarray, bbox_xyxy, shape_name: str, margin: int = 10
     angle = bottom_point = next_point = None
     finder = CORNER_FINDERS.get(shape_name)
     if finder is not None:
-        contour = _largest_contour(mask)
+        contour = _object_contour(mask)
         if contour is not None:
             corners = finder(contour)
             if corners is not None:

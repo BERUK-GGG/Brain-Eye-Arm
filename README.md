@@ -18,7 +18,7 @@ vision/
   camera.py        Camera: Basler grab
   detector.py      Detector: YOLO -> shape, orientation, color, robot coords
   calibration.py   Calibration: pixel -> robot x,y (homography)
-  color.py         ColorClassifier: hue -> color name
+  color.py         ColorClassifier: fixed palette (red, green, blue, black, white)
   orientation.py   tilt-from-level: how far the object's bottommost two corners are from level
   shapes.py        DetectedShape + one subclass per shape (self-registering)
   tracker.py       CentroidTracker: stable IDs across passes
@@ -157,7 +157,7 @@ When in doubt, measure rather than use the table.
 python main.py
 ```
 
-Open `http://<pi-ip>:5000` (the Pi's Wi-Fi address). The page shows the live feed with detections, a color dropdown (from `config.json`'s `hue_ranges`, default "Any color"), one **Pick `<Shape>`** button per assigned shape (from `place_targets`), and a **Pick All** button -- both respect whatever color is selected. The page always matches whichever shapes/colors this config is set up for, nothing is hardcoded into it.
+Open `http://<pi-ip>:5000` (the Pi's Wi-Fi address). The page shows the live feed with detections, a color dropdown (the fixed palette in `vision/color.py`, default "Any color"), one **Pick `<Shape>`** button per assigned shape (from `place_targets`), and a **Pick All** button -- both respect whatever color is selected. The page always matches whichever shapes/colors this config is set up for, nothing is hardcoded into it.
 
 `POST /pick` takes an optional JSON body `{"shape": "Triangle", "color": "red"}` -- either field, or an empty/absent body, matches anything. `GET /shapes` and `GET /colors` list what the dropdown/buttons are built from.
 
@@ -184,7 +184,7 @@ Open `http://<pi-ip>:5000` (the Pi's Wi-Fi address). The page shows the live fee
 - `calibration`: matching `image_points` and `robot_points`. See setup step 4.
 - `place_targets`: robot x,y where each shape is dropped. **Only shapes listed here are detected**, so this is how the two unassigned shapes are ignored. A shape set to `null` is detected but not picked.
 - `target_tilt`: per-shape slot rotation in degrees. See setup step 6. Defaults to 0 for any shape not listed.
-- `hue_ranges`: optional overrides for color names (OpenCV hue, 0-179).
+- `color_thresholds`: optional overrides for the color classifier, e.g. `{"black_max": 0.45, "white_max_chroma": 0.3}`. See `vision/color.py`.
 - `robot`: host, port, timeout, home position, `z_safe`, `z_pick`, suction output index and settle time.
 
 ## Robot protocol

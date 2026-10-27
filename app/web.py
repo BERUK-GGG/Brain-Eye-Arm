@@ -82,7 +82,7 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
                 known_colors: List[str] = ()) -> Flask:
     """assigned_shapes: the shape names this GUI offers buttons for (see
     config.json's place_targets). known_colors: the color names its
-    dropdown offers (see config.json's hue_ranges). Both keep the page in
+    dropdown offers (vision/color.py's PALETTE). Both keep the page in
     sync with whatever this config is actually set up for, rather than
     hardcoding names into the page."""
     app = Flask(__name__)

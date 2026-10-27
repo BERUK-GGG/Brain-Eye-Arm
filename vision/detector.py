@@ -2,8 +2,6 @@ import os
 import time
 from typing import Dict, Iterable, List, Optional
 
-import cv2
-
 from config import Config
 from vision import orientation
 from vision.calibration import Calibration
@@ -52,7 +50,7 @@ class Detector:
         return cls(
             model=YOLO(config.model_path),
             calibration=Calibration(config.image_points, config.robot_points),
-            color_classifier=ColorClassifier(config.hue_ranges),
+            color_classifier=ColorClassifier(**config.color_thresholds),
             assigned_shapes=config.place_targets.keys(),
             class_aliases=config.class_aliases,
             conf_threshold=config.yolo_conf_threshold,
@@ -113,9 +111,4 @@ class Detector:
         if measurement.mask is None:
             return ""
         x1, y1, x2, y2 = measurement.crop_box
-        hsv_crop = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
-        color, mean_hue = self._color.classify(hsv_crop, measurement.mask)
-        if color is None:
-            print(f"color unresolved (mean hue {mean_hue}) -- check hue_ranges in config.json")
-            return ""
-        return color
+        return self._color.classify(img[y1:y2, x1:x2], measurement.mask) or ""

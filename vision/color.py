@@ -1,26 +1,50 @@
-"""Color classification for a detected object."""
+"""Color classification for a detected object, against a fixed palette."""
 
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import numpy as np
 
+# The only colors the objects come in. The web UI's color dropdown lists these.
+PALETTE = ("red", "green", "blue", "black", "white")
+
+_CHANNEL_COLORS = ("blue", "green", "red")  # OpenCV's BGR channel order
+
 
 class ColorClassifier:
-    """Buckets the mean HSV hue inside an object's mask into a named color.
-    The YOLO model only knows shapes, so color stays classical."""
+    """Names an object's color from PALETTE. The YOLO model only knows
+    shapes, so color stays classical.
 
-    def __init__(self, hue_ranges: Dict[str, List[Tuple[int, int]]]):
-        self._hue_ranges = hue_ranges
+    The object's median color is divided by the table's (the white paper
+    around it, i.e. the crop's pixels outside the mask). That cancels
+    exposure and white balance, which differ between stations: paper
+    always becomes (1, 1, 1). Then:
 
-    def classify(self, hsv_img: np.ndarray, mask: np.ndarray) -> Tuple[Optional[str], Optional[float]]:
-        """Returns (color_name, mean_hue). color_name is None if no
-        configured range matches; mean_hue is None if the mask is empty."""
-        hue_values = hsv_img[:, :, 0][mask > 0]
-        if hue_values.size == 0:
-            return None, None
-        mean_hue = float(np.mean(hue_values))
+      brightest channel below black_max            -> black
+      channels within white_max_chroma of each other -> white
+      otherwise the strongest channel              -> red / green / blue
 
-        for color, ranges in self._hue_ranges.items():
-            if any(lo <= mean_hue <= hi for lo, hi in ranges):
-                return color, mean_hue
-        return None, mean_hue
+    A dominant channel rather than hue ranges, because this camera shows
+    red as orange (hue ~11) and black with a green tint, which hue ranges
+    got wrong. Measured on both stations: black objects reach at most
+    ~0.35, colored ones at least ~0.6."""
+
+    def __init__(self, black_max: float = 0.45, white_max_chroma: float = 0.3):
+        self._black_max = black_max
+        self._white_max_chroma = white_max_chroma
+
+    def classify(self, crop_bgr: np.ndarray, mask: np.ndarray) -> Optional[str]:
+        """Returns a PALETTE name, or None if the mask leaves no object or
+        no table pixels to compare against."""
+        inside, outside = mask > 0, mask == 0
+        if not inside.any() or not outside.any():
+            return None
+        crop = crop_bgr.astype(np.float32)
+        table = np.maximum(np.median(crop[outside], axis=0), 1.0)
+        normalised = np.median(crop[inside], axis=0) / table
+
+        brightest = float(normalised.max())
+        if brightest < self._black_max:
+            return "black"
+        if (brightest - float(normalised.min())) / brightest < self._white_max_chroma:
+            return "white"
+        return _CHANNEL_COLORS[int(normalised.argmax())]
