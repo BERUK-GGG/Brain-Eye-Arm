@@ -19,9 +19,14 @@ from vision.detector import Detector
 from vision.tracker import CentroidTracker
 
 
+POLLED_ROUTES = ("/detections", "/status", "/history")
+
+
 def main():
-    # The page polls several times a second; don't log every request.
-    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    # The HMI polls these several times a second; keep them out of the
+    # request log so it still shows the requests that matter (e.g. /pick).
+    logging.getLogger("werkzeug").addFilter(
+        lambda record: not any(f"GET {route}" in record.getMessage() for route in POLLED_ROUTES))
 
     config = Config.load()
 
