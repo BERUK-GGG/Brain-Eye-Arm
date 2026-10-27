@@ -1,6 +1,6 @@
 import threading
 import time
-from typing import Dict
+from typing import Dict, List
 
 from vision.camera import Camera
 from vision.detector import Detector
@@ -22,6 +22,12 @@ class VisionService:
 
     The grab rate is capped because unthrottled color conversion competed
     with YOLO for CPU and made inference several times slower.
+
+    Detection is paused while the arm works (pause()/resume()): the arm
+    passing through the view hides and "moves" parts, which made the
+    tracker drop them and re-register them under new IDs. While paused
+    the last tracked snapshot stays frozen, and redetect() takes one-off
+    looks that bypass the tracker (to check whether a pick worked).
     """
 
     def __init__(self, camera: Camera, detector: Detector, tracker: CentroidTracker,
@@ -38,6 +44,8 @@ class VisionService:
         self._last_detect_time = None
         self._detect_seconds = None
         self._stop = threading.Event()
+        self._paused = threading.Event()
+        self._detect_lock = threading.Lock()   # one detector pass at a time
 
     def start(self) -> None:
         threading.Thread(target=self._grab_loop, daemon=True).start()
@@ -64,7 +72,36 @@ class VisionService:
                 "frame_age": None if self._last_frame_time is None else now - self._last_frame_time,
                 "detection_age": None if self._last_detect_time is None else now - self._last_detect_time,
                 "detect_seconds": self._detect_seconds,
+                "paused": self._paused.is_set(),
             }
+
+    def pause(self) -> None:
+        """Stops tracker updates; returns once no detection pass is running,
+        so nothing seen after this call reaches the tracker."""
+        self._paused.set()
+        with self._detect_lock:
+            pass
+
+    def resume(self) -> None:
+        self._paused.clear()
+
+    def redetect(self, settle_seconds: float = 0.3, timeout: float = 5.0) -> List[DetectedShape]:
+        """One detection pass on a frame grabbed at least settle_seconds
+        from now (so the arm has stopped and the image isn't blurred),
+        without updating the tracker. Raises RuntimeError if no such frame
+        arrives within timeout."""
+        wanted_after = time.monotonic() + settle_seconds
+        deadline = wanted_after + timeout
+        while True:
+            with self._lock:
+                if self._last_frame_time is not None and self._last_frame_time >= wanted_after:
+                    frame = self._latest_frame.copy()
+                    break
+            if time.monotonic() > deadline:
+                raise RuntimeError("No fresh camera frame to check the pick with")
+            time.sleep(0.05)
+        with self._detect_lock:
+            return self._detector.detect(frame)
 
     def discard(self, object_id: int) -> None:
         """Stop tracking an object right now (it was just picked), rather
@@ -87,12 +124,15 @@ class VisionService:
         # No sleep: detector.detect() itself paces this loop.
         while not self._stop.is_set():
             frame = self._frame_copy()
-            if frame is None:
+            if frame is None or self._paused.is_set():
                 time.sleep(0.05)
                 continue
 
-            start = time.monotonic()
-            tracked = self._tracker.update(self._detector.detect(frame))
+            with self._detect_lock:
+                if self._paused.is_set():
+                    continue  # paused while this frame was being fetched
+                start = time.monotonic()
+                tracked = self._tracker.update(self._detector.detect(frame))
             with self._lock:
                 self._latest_tracked = dict(tracked)  # snapshot: the tracker keeps changing its own
                 self._last_detect_time = time.monotonic()

@@ -8,7 +8,7 @@ import cv2
 from flask import Flask, Response, jsonify, render_template, request
 
 from app.overlay import draw_overlay
-from app.selection import filter_tracked
+from app.selection import filter_tracked, find_same_object
 from app.service import VisionService
 from robot.client import RobotClient
 from robot.picker import PickAndPlaceController, PickInProgress
@@ -135,9 +135,20 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
             print(f"Pick {wanted}: nothing currently detected matches")
             return finish(400, ok=False, error=f"No current detection matching '{wanted}' to pick")
 
+        def find_again(shape):
+            """Is the part still lying where it was? (arm is home, out of view)"""
+            return find_same_object(shape, service.redetect())
+
+        if controller.busy:
+            print(f"Pick {wanted}: refused -- a pick cycle is already in progress")
+            return jsonify(ok=False, error="A pick cycle is already in progress"), 409
+
         print(f"Pick {wanted}: {len(tracked)} part(s)")
+        # No tracker updates while the arm is in view -- see VisionService.
+        service.pause()
         try:
-            results = controller.run_cycle(tracked, on_placed=service.discard, on_result=record)
+            results = controller.run_cycle(tracked, on_placed=service.discard, on_result=record,
+                                           find_again=find_again)
         except PickInProgress as e:
             print(f"Pick {wanted}: refused -- {e}")
             return jsonify(ok=False, error=str(e)), 409  # not recorded: the running cycle's outcome matters
@@ -145,6 +156,9 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
             print(f"ERROR: pick {wanted} failed: {e}")
             record({"status": "failed", "request": wanted, "error": str(e)})
             return finish(500, ok=False, error=str(e))
+        finally:
+            if not controller.busy:  # a refused request mustn't resume during someone else's cycle
+                service.resume()
         print(f"Pick {wanted}: done -- " + ", ".join(f"{r['shape']} {r['status']}" for r in results))
         return finish(200, ok=True, results=results)
 

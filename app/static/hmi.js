@@ -85,7 +85,8 @@ async function refreshStatus() {
     else if (v.frame_age > 2) setPill("pill-camera", "err", `stalled ${age(v.frame_age)}`);
     else setPill("pill-camera", "ok", "live");
 
-    if (v.detection_age == null) setPill("pill-vision", "warn", "starting");
+    if (v.paused) setPill("pill-vision", "busy", "paused while picking");
+    else if (v.detection_age == null) setPill("pill-vision", "warn", "starting");
     else if (v.detection_age > 10) setPill("pill-vision", "err", `stalled ${age(v.detection_age)}`);
     else setPill("pill-vision", "ok", `${v.detect_seconds.toFixed(2)} s / pass`);
     $("feed-meta").textContent = v.detection_age == null ? "" : `detections updated ${age(v.detection_age)}`;
@@ -148,11 +149,13 @@ function updateButtons() {
 function showResult(outcome) {
     const box = $("last-result");
     box.hidden = false;
-    box.className = `result ${outcome.busy ? "busy" : outcome.ok ? "ok" : "err"}`;
+    const allPlaced = outcome.ok && outcome.results.every((r) => r.status === "placed");
+    box.className = `result ${outcome.busy ? "busy" : allPlaced ? "ok" : outcome.ok ? "warn" : "err"}`;
     let text;
     if (outcome.busy) text = `Picking ${outcome.request}...`;
     else if (outcome.ok) text = `${outcome.request}: ` + outcome.results.map((r) =>
-        `${r.color ? r.color + " " : ""}${r.shape} ${r.status === "placed" ? "placed" : "skipped (no place target)"}`).join(", ");
+        `${r.color ? r.color + " " : ""}${r.shape} ${resultTag(r.status)}` +
+        (r.attempts > 1 ? ` (${r.attempts} attempts)` : "")).join(", ");
     else text = `${outcome.request}: ${outcome.error}`;
     box.replaceChildren(el("span", { class: "when" }, outcome.time || ""), text);
 }
@@ -178,7 +181,9 @@ async function pick(body, label) {
 
 const fmtXY = (xy) => (xy ? `${xy[0].toFixed(1)}, ${xy[1].toFixed(1)}` : "--");
 const fmtDeg = (deg) => (deg == null ? "--" : `${deg.toFixed(1)}°`);
-const resultTag = (status) => ({ placed: "placed", skipped_no_target: "skipped", failed: "failed" }[status] || status);
+const resultTag = (status) => ({
+    placed: "placed", skipped_no_target: "skipped", not_picked_up: "missed", failed: "failed",
+}[status] || status);
 
 function partCell(entry) {
     if (!entry.shape) return entry.request || "--";   // a failed request, not a single part
@@ -210,6 +215,7 @@ function renderHistory() {
         el("td", { class: "num" }, fmtXY(e.place)),
         el("td", {},
             el("span", { class: `tag ${resultTag(e.status)}` }, resultTag(e.status)),
+            e.attempts > 1 ? el("span", { class: "attempts" }, `${e.attempts} attempts`) : "",
             e.error ? el("span", { class: "error-text" }, e.error) : ""),
     )));
     $("history-empty").hidden = state.history.length > 0;
@@ -217,16 +223,16 @@ function renderHistory() {
 
     const count = (status) => state.history.filter((e) => e.status === status).length;
     $("history-summary").textContent =
-        `placed ${count("placed")} · skipped ${count("skipped_no_target")} · failed ${count("failed")}`;
+        `placed ${count("placed")} · missed ${count("not_picked_up")} · skipped ${count("skipped_no_target")} · failed ${count("failed")}`;
 }
 
 function exportHistory() {
     const header = ["time", "object_id", "color", "shape", "pick_x", "pick_y", "angle_deg",
-        "rotation_deg", "place_x", "place_y", "result", "error"];
+        "rotation_deg", "place_x", "place_y", "result", "attempts", "error"];
     const cell = (v) => (v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
     const rows = state.history.map((e) => [
         e.time, e.object_id, e.color, e.shape ?? e.request, e.pick?.[0], e.pick?.[1], e.orientation,
-        e.rotation, e.place?.[0], e.place?.[1], resultTag(e.status), e.error,
+        e.rotation, e.place?.[0], e.place?.[1], resultTag(e.status), e.attempts, e.error,
     ].map(cell).join(","));
     const blob = new Blob([[header.join(","), ...rows].join("\n") + "\n"], { type: "text/csv" });
     const link = el("a", {

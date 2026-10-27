@@ -208,6 +208,7 @@ select:focus { outline: none; border-color: var(--accent); }
     background: var(--bg);
 }
 .result.ok   { border-left-color: var(--ok); }
+.result.warn { border-left-color: var(--warn); }
 .result.err  { border-left-color: var(--err); }
 .result.busy { border-left-color: var(--busy); }
 .result .when { color: var(--muted); margin-right: 8px; }
@@ -251,6 +252,8 @@ tbody tr.match td:first-child { border-left: 4px solid var(--accent); }
 .tag.placed  { background: var(--ok); }
 .tag.skipped { background: var(--warn); }
 .tag.failed  { background: var(--err); color: #fff; }
+.tag.missed  { background: #e8590c; }
+.attempts { color: var(--warn); margin-left: 8px; font-size: 11px; }
 .error-text { color: var(--err); margin-left: 8px; white-space: normal; }
 
 .empty { padding: 18px; text-align: center; color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: .08em; }

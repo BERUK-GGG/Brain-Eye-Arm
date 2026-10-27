@@ -50,14 +50,23 @@ class PickAndPlaceController:
 
     def run_cycle(self, detections: Union[Dict[int, DetectedShape], List[DetectedShape]],
                   on_placed: Optional[Callable[[int], None]] = None,
-                  on_result: Optional[Callable[[dict], None]] = None) -> List[dict]:
+                  on_result: Optional[Callable[[dict], None]] = None,
+                  find_again: Optional[Callable[[DetectedShape], Optional[DetectedShape]]] = None) -> List[dict]:
         """Picks and places each detection in turn (sorted by pixel position
         for a repeatable order) and returns one result dict per shape:
             {"object_id": 3, "shape": "Triangle", "color": "red", "status": "placed",
-             "pick": (x, y), "orientation": 12.0, "place": (x, y), "rotation": -12.0}
-        (pick/orientation always; place/rotation only when placed)
-        status is "placed" or "skipped_no_target" (no place target in
-        config.json, so nowhere to put it down).
+             "pick": (x, y), "orientation": 12.0, "attempts": 1,
+             "place": (x, y), "rotation": -12.0}
+        (place/rotation only when placed or not_picked_up). status is:
+          "placed"             done (or, without find_again, assumed done)
+          "not_picked_up"      still lying there after every retry
+          "skipped_no_target"  no place target in config.json
+
+        find_again(shape), when given, is called with the arm back home
+        after each attempt and returns the part if it's still lying where
+        it was (None if it's gone, i.e. the pick worked). Then the pick is
+        retried at the part's newly seen position, settings.retry_z_step
+        lower each time, up to settings.pick_retries times.
 
         detections: a dict of object_id -> DetectedShape (a tracker's
         output), or a plain list (object_id is then None throughout).
@@ -83,38 +92,55 @@ class PickAndPlaceController:
 
             with self._robot.session():
                 for object_id, shape in sorted(items, key=lambda item: item[1].pixel):
-                    results.append(self._handle(object_id, shape, on_placed))
+                    results.append(self._handle(object_id, shape, on_placed, find_again))
                     if on_result is not None:
                         on_result(results[-1])
             return results
         finally:
             self._busy.release()
 
-    def _handle(self, object_id, shape: DetectedShape, on_placed) -> dict:
+    def _handle(self, object_id, shape: DetectedShape, on_placed, find_again) -> dict:
         result = {"object_id": object_id, "shape": shape.shape_name, "color": shape.color,
                   "pick": shape.robot, "orientation": shape.orientation}
 
         target = self._place_targets.get(shape.shape_name)
         if target is None:
             print(f"Skipping {shape.shape_name}: no place target in config.json")
-            return {**result, "status": "skipped_no_target"}
+            return {**result, "status": "skipped_no_target", "attempts": 0}
 
-        # How far to rotate the object (while still holding it) so it ends
-        # up at this shape's target tilt instead of wherever it currently
-        # sits. E.g. orientation=20, target=0 -> correction=-20: rotate the
-        # wrist -20 degrees to bring it from 20 down to level.
-        correction = wrap_to_symmetry(
-            self._target_tilt.get(shape.shape_name, 0.0) - shape.orientation, shape.SYMMETRY_DEG)
-        print(
-            f"Picking {shape.shape_name} ({shape.color}) at {shape.robot}, orientation "
-            f"{shape.orientation:.2f} deg -- rotating {correction:.2f} deg before placing"
-        )
-        self._pick_and_place(shape.robot, target, correction)
-        if on_placed is not None and object_id is not None:
-            on_placed(object_id)
-        return {**result, "status": "placed", "place": target, "rotation": correction}
+        s = self._settings
+        attempts = 1 + (s.pick_retries if find_again is not None else 0)
+        for attempt in range(attempts):
+            # Each retry presses retry_z_step mm deeper: the usual reason
+            # for a miss is the cup not sealing on the part's top.
+            z_pick = s.z_pick - attempt * s.retry_z_step
+            # How far to rotate the object (while still holding it) so it
+            # ends up at this shape's target tilt instead of wherever it
+            # currently sits. E.g. orientation=20, target=0 -> correction=-20:
+            # rotate the wrist -20 degrees to bring it from 20 down to level.
+            correction = wrap_to_symmetry(
+                self._target_tilt.get(shape.shape_name, 0.0) - shape.orientation, shape.SYMMETRY_DEG)
+            print(
+                f"Picking {shape.shape_name} ({shape.color}) at {shape.robot}, z={z_pick}, orientation "
+                f"{shape.orientation:.2f} deg -- rotating {correction:.2f} deg before placing"
+                + (f" (retry {attempt} of {attempts - 1})" if attempt else "")
+            )
+            self._pick_and_place(shape.robot, target, correction, z_pick)
 
-    def _pick_and_place(self, pick_xy, place_xy, correction: float) -> None:
+            still_there = find_again(shape) if find_again is not None else None
+            if still_there is None:
+                if on_placed is not None and object_id is not None:
+                    on_placed(object_id)
+                return {**result, "status": "placed", "attempts": attempt + 1,
+                        "place": target, "rotation": correction}
+            print(f"{shape.shape_name} ({shape.color}) is still at the pick spot -- not picked up")
+            shape = still_there  # retry where (and as) it's lying now
+
+        print(f"Giving up on {shape.shape_name} ({shape.color}) after {attempts} attempts")
+        return {**result, "status": "not_picked_up", "attempts": attempts,
+                "place": target, "rotation": correction}
+
+    def _pick_and_place(self, pick_xy, place_xy, correction: float, z_pick: float) -> None:
         # Pick at the wrist's default (taught) rotation -- a suction cup
         # grips a flat top regardless of approach angle, so there's no need
         # to pre-align with the object; it comes up still at its own
@@ -122,18 +148,18 @@ class PickAndPlaceController:
         # `correction` on the way to the place point (while still holding
         # it) is what actually reorients the object in the world -- moving
         # the arm around at a fixed wrist angle does nothing to it.
-        self._touch(pick_xy, suction_on=True, r=0)
-        self._touch(place_xy, suction_on=False, r=correction)
+        self._touch(pick_xy, z_pick, suction_on=True, r=0)
+        self._touch(place_xy, self._settings.z_pick, suction_on=False, r=correction)
         # Reset the wrist back to default before the next cycle's pick.
         self._robot.move_to(*self._settings.home_xy, self._settings.z_safe, 0)
 
-    def _touch(self, xy, suction_on: bool, r: float) -> None:
-        """Descend onto xy at rotation r, switch suction, wait for the
-        vacuum to grip or release, then rise clear again."""
+    def _touch(self, xy, z: float, suction_on: bool, r: float) -> None:
+        """Descend onto xy (down to height z) at rotation r, switch suction,
+        wait for the vacuum to grip or release, then rise clear again."""
         s = self._settings
         x, y = xy
         self._robot.move_to(x, y, s.z_safe, r)
-        self._robot.move_to(x, y, s.z_pick, r)
+        self._robot.move_to(x, y, z, r)
         self._robot.set_output(s.suction_do_index, suction_on)
         time.sleep(s.suction_settle_seconds)
         self._robot.move_to(x, y, s.z_safe, r)

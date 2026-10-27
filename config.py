@@ -26,6 +26,11 @@ class RobotSettings:
     z_pick: float = 17.0
     suction_do_index: int = 1
     suction_settle_seconds: float = 0.5
+    # Fail recovery (robot/picker.py): if the part is still where it was
+    # after a cycle, try again up to pick_retries more times, each one
+    # retry_z_step mm lower than the last.
+    pick_retries: int = 2
+    retry_z_step: float = 1.0
 
 
 @dataclass

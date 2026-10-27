@@ -202,7 +202,7 @@ API, for scripting:
 - `place_targets`: robot x,y where each shape is dropped. **Only shapes listed here are detected**, so this is how the two unassigned shapes are ignored. A shape set to `null` is detected but not picked.
 - `target_tilt`: per-shape slot rotation in degrees. See setup step 6. Defaults to 0 for any shape not listed.
 - `color_thresholds`: optional overrides for the color classifier, e.g. `{"black_max": 0.45, "white_max_chroma": 0.3}`. See `vision/color.py`.
-- `robot`: host, port, timeout, home position, `z_safe`, `z_pick`, suction output index and settle time.
+- `robot`: host, port, timeout, home position, `z_safe`, `z_pick`, suction output index and settle time, and fail recovery: `pick_retries` (default 2) extra attempts when a part is still lying at its pick spot after a cycle, each `retry_z_step` mm (default 1) lower than the last.
 
 ## Robot protocol
 
