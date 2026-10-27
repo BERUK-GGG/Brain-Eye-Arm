@@ -2,6 +2,12 @@
 
 INA700 project: a Basler camera and a YOLO model on a Raspberry Pi 4 find shapes (Triangle, Circle, Square). A Dobot Magician E6 picks each one with suction and places it in its slot on the board.
 
+## Demo
+
+![The operator HMI during a pick cycle: live detections with orientation, the robot picking, and the pick history filling in (4x speed)](Demo/demo.gif)
+
+The operator HMI during a "Pick all" cycle, at 4x speed. [Full recording (55 s, MP4)](Demo/demo.mp4).
+
 ## How it works
 
 ```
