@@ -1,10 +1,15 @@
 """
 Entry point: wires the camera, detector, tracker, robot link and web UI
-together and serves the live feed with per-shape pick buttons.
+together and serves the operator HMI: live feed, detected parts, pick
+controls and log.
 
     python main.py        ->  http://<pi-ip>:5000
 """
 
+import logging
+import sys
+
+from app.logbuffer import LogBuffer
 from app.service import VisionService
 from app.web import create_app
 from config import Config
@@ -17,6 +22,12 @@ from vision.tracker import CentroidTracker
 
 
 def main():
+    # Mirror everything printed into the HMI's log panel (see app/logbuffer.py).
+    logs = LogBuffer(sys.stdout)
+    sys.stdout = logs
+    # The page polls several times a second; don't log every request.
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
     config = Config.load()
 
     with Camera() as camera:
@@ -33,7 +44,9 @@ def main():
         try:
             assigned_shapes = sorted(config.place_targets)
             known_colors = list(PALETTE)
-            create_app(service, controller, assigned_shapes, known_colors).run(host="0.0.0.0", port=5000, threaded=True)
+            app = create_app(service, controller, assigned_shapes, known_colors, robot=robot, logs=logs)
+            print("HMI ready on port 5000")
+            app.run(host="0.0.0.0", port=5000, threaded=True)
         finally:
             service.stop()
             #robot.close()  # sends CLOSE, ending the script on the Dobot

@@ -62,22 +62,13 @@ class Detector:
         start = time.perf_counter()
         boxes = self._model.predict(img, conf=self._conf_threshold, verbose=False)[0].boxes
         self.last_inference_seconds = time.perf_counter() - start
-        print(f"YOLO inference: {self.last_inference_seconds * 1000:.1f} ms")
 
         detections = []
         for box in boxes:
             shape_name = self._resolve_shape_name(box)
             if shape_name not in self._assigned_shapes or shape_name not in SHAPE_REGISTRY:
-                print(f"Ignoring detection '{shape_name}' (not an assigned shape)")
-                continue
-
-            shape = self._build_shape(img, box, shape_name)
-            print(
-                f"{shape.shape_name.lower()}  conf={shape.confidence:.2f}  "
-                f"pixel={shape.pixel}  robot=({shape.robot[0]:.2f}, {shape.robot[1]:.2f})  "
-                f"color={shape.color}  orientation={shape.orientation:.2f} deg"
-            )
-            detections.append(shape)
+                continue  # e.g. the shapes not assigned to this station
+            detections.append(self._build_shape(img, box, shape_name))
         return detections
 
     def _resolve_shape_name(self, box) -> str:

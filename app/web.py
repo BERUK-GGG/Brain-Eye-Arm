@@ -1,91 +1,34 @@
+import threading
 import time
-from typing import List
+from typing import List, Optional
 
 import cv2
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, render_template, request
 
+from app.logbuffer import LogBuffer
 from app.overlay import draw_overlay
 from app.selection import filter_tracked
 from app.service import VisionService
+from robot.client import RobotClient
 from robot.picker import PickAndPlaceController, PickInProgress
 
 STREAM_JPEG_QUALITY = 70    # 0-100; lower = smaller frames, more visible artifacts
 STREAM_FPS = 15
 
-INDEX_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Basler Camera</title>
-    <style>
-        button { font-size: 1.1em; padding: 10px 24px; margin: 6px 6px 0 0; }
-        #status { margin-top: 12px; font-family: monospace; }
-    </style>
-</head>
-<body>
-    <h1>Basler Live Feed</h1>
-    <img src="/video" style="width: 1500px; height: auto;">
-    <div>
-        <p>
-            Color:
-            <select id="color-select"><option value="">Any color</option></select>
-        </p>
-        <p>Pick one object -- which shape gets picked next is chosen here, not automatically:</p>
-        <div id="shape-buttons"></div>
-        <p>Or, to pick everything currently tracked (matching the color above) in one cycle:</p>
-        <button onclick="pick(null)">Pick All</button>
-    </div>
-    <div id="status"></div>
-    <script>
-        async function loadOptions(url, elementId, label) {
-            const res = await fetch(url);
-            const data = await res.json();
-            const container = document.getElementById(elementId);
-            for (const value of data[label]) {
-                if (elementId === 'color-select') {
-                    const option = document.createElement('option');
-                    option.value = value;
-                    option.textContent = value;
-                    container.appendChild(option);
-                } else {
-                    const button = document.createElement('button');
-                    button.textContent = 'Pick ' + value;
-                    button.onclick = () => pick(value);
-                    container.appendChild(button);
-                }
-            }
-        }
-
-        async function pick(shape) {
-            const color = document.getElementById('color-select').value || null;
-            const label = [shape, color].filter(Boolean).join(' ') || 'everything tracked';
-            document.getElementById('status').innerText = `Picking ${label}...`;
-            const res = await fetch('/pick', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ shape: shape, color: color }),
-            });
-            const data = await res.json();
-            document.getElementById('status').innerText =
-                data.ok ? JSON.stringify(data.results) : `Error: ${data.error}`;
-        }
-
-        loadOptions('/shapes', 'shape-buttons', 'shapes');
-        loadOptions('/colors', 'color-select', 'colors');
-    </script>
-</body>
-</html>
-"""
-
 
 def create_app(service: VisionService, controller: PickAndPlaceController, assigned_shapes: List[str],
-                known_colors: List[str] = ()) -> Flask:
-    """assigned_shapes: the shape names this GUI offers buttons for (see
-    config.json's place_targets). known_colors: the color names its
-    dropdown offers (vision/color.py's PALETTE). Both keep the page in
-    sync with whatever this config is actually set up for, rather than
-    hardcoding names into the page."""
+                known_colors: List[str] = (), robot: Optional[RobotClient] = None,
+                logs: Optional[LogBuffer] = None) -> Flask:
+    """assigned_shapes: the shape names this GUI offers (see config.json's
+    place_targets). known_colors: the color names it offers (see
+    vision/color.py's PALETTE). Both keep the page in sync with whatever
+    this config is actually set up for, rather than hardcoding names into
+    the page. robot and logs are optional: without them the status bar
+    shows no link state and the log panel stays empty."""
     app = Flask(__name__)
+
+    last_pick = {}              # outcome of the most recent /pick, for /status
+    last_pick_lock = threading.Lock()
 
     def mjpeg_frames():
         """Draws the latest detections onto the FRESHEST frame for every
@@ -101,7 +44,7 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
 
     @app.route("/")
     def index():
-        return INDEX_HTML
+        return render_template("index.html")
 
     @app.route("/video")
     def video():
@@ -113,33 +56,86 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
 
     @app.route("/colors")
     def colors():
-        return jsonify(colors=known_colors)
+        return jsonify(colors=list(known_colors))
+
+    @app.route("/detections")
+    def detections():
+        """Currently tracked parts, by tracker ID."""
+        return jsonify(parts=[
+            {
+                "id": object_id,
+                "shape": shape.shape_name,
+                "color": shape.color,
+                "confidence": shape.confidence,
+                "orientation": shape.orientation if shape.orientation_points is not None else None,
+                "pixel": shape.pixel,
+                "robot": shape.robot,
+            }
+            for object_id, shape in sorted(service.tracked_snapshot().items())
+        ])
+
+    @app.route("/status")
+    def status():
+        with last_pick_lock:
+            pick = dict(last_pick)
+        return jsonify(
+            vision=service.stats(),
+            robot={
+                "address": robot.address if robot else None,
+                "connected": robot.connected if robot else None,
+                "busy": controller.busy,
+            },
+            last_pick=pick or None,
+        )
+
+    @app.route("/logs")
+    def log_lines():
+        """Printed lines numbered after ?after=N (0 = everything kept)."""
+        after = request.args.get("after", default=0, type=int)
+        return jsonify(lines=logs.since(after) if logs else [])
 
     @app.route("/pick", methods=["POST"])
     def pick():
         """One pick-and-place cycle over the current selection. Runs on
         demand only, so the arm never moves unasked.
 
-        Body (JSON, all optional): {"shape": "Triangle", "color": "red"}.
-        Either omitted or null matches anything; an empty body (or none
-        at all) picks everything currently tracked, same as the old
-        "Pick All" -- so this stays backward compatible with a plain
-        POST /pick."""
+        Body (JSON, all optional): {"shape": "Triangle", "color": "red"},
+        or {"object_id": 3} for one specific tracked part. Omitted or null
+        fields match anything; an empty body (or none at all) picks
+        everything currently tracked -- so a plain POST /pick still works."""
         payload = request.get_json(silent=True) or {}
         shape = payload.get("shape")
         color = payload.get("color")
+        object_id = payload.get("object_id")
 
-        tracked = filter_tracked(service.tracked_snapshot(), shape=shape, color=color)
+        snapshot = service.tracked_snapshot()
+        if object_id is not None:
+            wanted = f"part #{object_id}"
+            tracked = {object_id: snapshot[object_id]} if object_id in snapshot else {}
+        else:
+            wanted = " ".join(filter(None, [color, shape])) or "everything tracked"
+            tracked = filter_tracked(snapshot, shape=shape, color=color)
+
+        def finish(code: int, **outcome):
+            with last_pick_lock:
+                last_pick.clear()
+                last_pick.update(time=time.strftime("%H:%M:%S"), request=wanted, **outcome)
+            return jsonify(**outcome), code
+
         if not tracked:
-            wanted = " ".join(filter(None, [color, shape])) or "anything"
-            return jsonify(ok=False, error=f"No current detection matching '{wanted}' to pick"), 400
+            print(f"Pick {wanted}: nothing currently detected matches")
+            return finish(400, ok=False, error=f"No current detection matching '{wanted}' to pick")
 
+        print(f"Pick {wanted}: {len(tracked)} part(s)")
         try:
             results = controller.run_cycle(tracked, on_placed=service.discard)
         except PickInProgress as e:
-            return jsonify(ok=False, error=str(e)), 409
+            print(f"Pick {wanted}: refused -- {e}")
+            return jsonify(ok=False, error=str(e)), 409  # not recorded: the running cycle's outcome matters
         except Exception as e:
-            return jsonify(ok=False, error=str(e)), 500
-        return jsonify(ok=True, results=results)
+            print(f"ERROR: pick {wanted} failed: {e}")
+            return finish(500, ok=False, error=str(e))
+        print(f"Pick {wanted}: done -- " + ", ".join(f"{r['shape']} {r['status']}" for r in results))
+        return finish(200, ok=True, results=results)
 
     return app

@@ -34,6 +34,9 @@ class VisionService:
         self._lock = threading.Lock()   # guards the two fields below
         self._latest_frame = None
         self._latest_tracked: Dict[int, DetectedShape] = {}
+        self._last_frame_time = None
+        self._last_detect_time = None
+        self._detect_seconds = None
         self._stop = threading.Event()
 
     def start(self) -> None:
@@ -52,6 +55,17 @@ class VisionService:
         with self._lock:
             return dict(self._latest_tracked)
 
+    def stats(self) -> dict:
+        """Ages (seconds) of the newest frame and detection pass, and how
+        long the last pass took -- None for anything that hasn't happened yet."""
+        now = time.monotonic()
+        with self._lock:
+            return {
+                "frame_age": None if self._last_frame_time is None else now - self._last_frame_time,
+                "detection_age": None if self._last_detect_time is None else now - self._last_detect_time,
+                "detect_seconds": self._detect_seconds,
+            }
+
     def discard(self, object_id: int) -> None:
         """Stop tracking an object right now (it was just picked), rather
         than waiting for it to age out and risk a second pick at the
@@ -66,6 +80,7 @@ class VisionService:
             if frame is not None:
                 with self._lock:
                     self._latest_frame = frame
+                    self._last_frame_time = time.monotonic()
             time.sleep(self._grab_interval)
 
     def _detect_loop(self) -> None:
@@ -76,9 +91,12 @@ class VisionService:
                 time.sleep(0.05)
                 continue
 
+            start = time.monotonic()
             tracked = self._tracker.update(self._detector.detect(frame))
             with self._lock:
                 self._latest_tracked = dict(tracked)  # snapshot: the tracker keeps changing its own
+                self._last_detect_time = time.monotonic()
+                self._detect_seconds = self._last_detect_time - start
 
     def _frame_copy(self):
         with self._lock:

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Brain-Eye-Arm HMI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='hmi.css') }}">
+</head>
+<body>
+<header class="topbar">
+    <div class="brand">
+        <span class="brand-name">Brain-Eye-Arm</span>
+        <span class="brand-sub">Pick &amp; place station</span>
+    </div>
+    <div class="pills">
+        <div class="pill" id="pill-camera"><i class="dot"></i><span class="pill-label">Camera</span><b>--</b></div>
+        <div class="pill" id="pill-vision"><i class="dot"></i><span class="pill-label">Vision</span><b>--</b></div>
+        <div class="pill" id="pill-robot"><i class="dot"></i><span class="pill-label">Robot</span><b>--</b></div>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+</header>
+
+<main class="layout">
+    <section class="panel feed">
+        <div class="panel-head">
+            <h2>Live camera</h2>
+            <span class="meta" id="feed-meta"></span>
+        </div>
+        <div class="feed-frame">
+            <img src="/video" alt="Live camera feed with detections">
+        </div>
+    </section>
+
+    <section class="panel controls">
+        <div class="panel-head"><h2>Pick command</h2></div>
+        <div class="fields">
+            <label>Shape
+                <select id="shape-select"><option value="">Any shape</option></select>
+            </label>
+            <label>Color
+                <select id="color-select"><option value="">Any color</option></select>
+            </label>
+        </div>
+        <button class="btn primary" id="btn-pick" disabled>Pick</button>
+        <p class="hint">Picks every tracked part matching the selection, one after another. Use a row's Pick button for a single part.</p>
+        <div class="result" id="last-result" hidden></div>
+    </section>
+
+    <section class="panel parts">
+        <div class="panel-head">
+            <h2>Detected parts</h2>
+            <span class="meta" id="parts-count"></span>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>ID</th><th>Shape</th><th>Color</th><th class="num">Conf</th>
+                    <th class="num">Angle</th><th class="num">Robot X, Y (mm)</th><th></th>
+                </tr>
+                </thead>
+                <tbody id="parts-body"></tbody>
+            </table>
+            <div class="empty" id="parts-empty">No parts detected</div>
+        </div>
+    </section>
+
+    <section class="panel logs">
+        <div class="panel-head">
+            <h2>Log</h2>
+            <div class="log-tools">
+                <label class="toggle"><input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
+                <button class="btn ghost small" id="btn-clear">Clear</button>
+            </div>
+        </div>
+        <div class="console" id="console" role="log" aria-live="polite"></div>
+    </section>
+</main>
+
+<script src="{{ url_for('static', filename='hmi.js') }}"></script>
+</body>
+</html>

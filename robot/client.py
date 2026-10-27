@@ -56,6 +56,16 @@ class RobotClient:
                 self.close(notify=False)  # nothing to notify: the socket is already broken
                 raise
 
+    @property
+    def address(self) -> str:
+        return f"{self._settings.host}:{self._settings.port}"
+
+    @property
+    def connected(self) -> bool:
+        """Whether a connection is currently open. It opens on the first
+        pick, so False before then is normal, not a fault."""
+        return self._sock is not None
+
     def move_to(self, x, y, z, r=0) -> str:
         """r: rotation OFFSET in degrees from P1's taught orientation (see
         module docstring) -- 0 means "leave it exactly as taught"."""

@@ -44,6 +44,10 @@ class PickAndPlaceController:
         self._target_tilt = target_tilt or {}
         self._busy = threading.Lock()
 
+    @property
+    def busy(self) -> bool:
+        return self._busy.locked()
+
     def run_cycle(self, detections: Union[Dict[int, DetectedShape], List[DetectedShape]],
                   on_placed: Optional[Callable[[int], None]] = None) -> List[dict]:
         """Picks and places each detection in turn (sorted by pixel position
