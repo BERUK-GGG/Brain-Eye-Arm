@@ -30,6 +30,7 @@ robot/
 
 app/
   service.py       VisionService: camera + detection threads, shared results
+  pick_worker.py   PickWorker: the robot communication thread (pick job queue, pick history)
   overlay.py       draws detections on a frame
   selection.py     filter_tracked: which detections match a shape/color pick request
   web.py           Flask routes for the HMI: /, /video, /detections, /status, /history, /shapes, /colors, /pick
@@ -47,6 +48,37 @@ stand_alone_scripts/
 ```
 
 Detector, calibration, color classifier and robot are passed in through constructors, so each can be swapped or faked in a test.
+
+### Threads
+
+Each thread has one job, as the project brief requires:
+
+| Thread | Functionality | Where |
+|---|---|---|
+| Camera grab | Pulls frames from the Basler camera (10 fps) and keeps the latest | `VisionService._grab_loop` |
+| Detection | AI inference, orientation, color, and pixel -> robot coordinate translation; updates the tracker | `VisionService._detect_loop` |
+| Robot worker | Server communication: runs each pick job against the Dobot, verifies and retries picks, records the history | `PickWorker._run` |
+| Web (Flask, one per request) | The GUI: serves the page, the video stream and status; hands pick jobs to the robot worker | `app/web.py` |
+
+The robot worker spends nearly all its time waiting on the robot socket, so it costs no CPU. The web threads never talk to the robot, so the GUI stays responsive during a cycle. During a cycle the detection thread pauses, so the arm passing through the view can't disturb the tracker's IDs.
+
+**How the threads share data.** They never call into each other's work directly; they hand data over through a few lock-protected points:
+
+- Camera grab -> detection: the latest frame (`VisionService._latest_frame`). Detection always takes the newest frame and skips any it missed, so a slow pass never builds up a backlog.
+- Detection -> web: a snapshot of the tracked parts (`tracked_snapshot()`), which the page polls through `/detections` and the video stream draws.
+- Web -> robot worker: a pick job on a queue (`PickWorker.submit()`). The queue holds one job, so a second pick while one is running is refused, not stacked up.
+- Robot worker -> web: the pick history and the last outcome, which the page polls through `/history` and `/status`.
+
+**How a pick flows:**
+
+1. The operator presses Pick. A web thread takes the current tracked snapshot, filters it by shape/color (or picks one part by ID), queues a job, and replies at once with a job ID.
+2. The robot worker takes the job and pauses detection.
+3. For each part it sends the moves to the Dobot: pick, rotate, place, back home.
+4. With the arm home and out of view, it asks the vision service for one fresh look (`redetect()`, which bypasses the tracker). If the part is still there, it retries up to 2 more times, 1 mm lower each time.
+5. Each result is added to the history as soon as it's known. Detection resumes when the job ends, even if it failed.
+6. The page sees the job's outcome in `/status` and unlocks the buttons.
+
+**Why coordinate translation has no thread of its own.** The pixel -> robot conversion is one small matrix multiplication per part (microseconds), done right after inference in the detection thread. A separate thread would only add a queue handoff and a delay between "detected" and "has robot coordinates" without doing any work in parallel. It is still its own component (`vision/calibration.py`), injected into the detector.
 
 ## Setup
 
@@ -173,7 +205,7 @@ API, for scripting:
 
 | Route | |
 |---|---|
-| `POST /pick` | Optional JSON body: `{"shape": "Triangle", "color": "red"}` (either field, or none, matches anything) or `{"object_id": 3}` for one part. |
+| `POST /pick` | Queues one cycle and returns at once (202, with a job ID). The outcome appears as `last_pick` in `/status` with the same job ID. 409 while a cycle is running, 400 if nothing matches. Optional JSON body: `{"shape": "Triangle", "color": "red"}` (either field, or none, matches anything) or `{"object_id": 3}` for one part. |
 | `GET /detections` | Tracked parts. |
 | `GET /status` | Camera/vision timings, robot link state, last pick outcome. |
 | `GET /history?after=N` | Handled parts (and failed requests) numbered after `N`. |

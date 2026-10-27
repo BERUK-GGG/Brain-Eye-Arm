@@ -7,7 +7,7 @@ const POLL_MS = { parts: 500, status: 1000, history: 1000 };
 
 const state = {
     parts: [],
-    picking: false,     // this page is waiting on a /pick
+    pendingJob: null,   // this page's pick: "sending", then its job ID until the outcome arrives
     robotBusy: false,   // a cycle is running (from any client)
     history: [],        // handled objects since the backend started
     historySeq: 0,
@@ -97,8 +97,18 @@ async function refreshStatus() {
     else if (r.connected) setPill("pill-robot", "ok", `connected ${r.address}`);
     else setPill("pill-robot", "warn", r.address ? `idle, connects on pick` : "unknown");
 
-    // Show another client's pick too, but don't overwrite our own in-flight message.
-    if (!state.picking && data.last_pick) showResult(data.last_pick);
+    // Our job finished once /status reports its outcome.
+    const outcome = data.last_pick;
+    if (typeof state.pendingJob === "number" && outcome && outcome.job === state.pendingJob) {
+        state.pendingJob = null;
+        refreshParts().catch(() => {});
+    }
+    // Otherwise mirror whatever the robot is doing (e.g. a pick from another browser),
+    // without overwriting our own "Picking..." message.
+    if (state.pendingJob === null) {
+        if (r.busy) showResult({ busy: true, request: r.current || "...", time: "" });
+        else if (outcome) showResult(outcome);
+    }
     updateButtons();
 }
 
@@ -139,7 +149,7 @@ function renderParts() {
 }
 
 function updateButtons() {
-    const locked = state.picking || state.robotBusy;
+    const locked = state.pendingJob !== null || state.robotBusy;
     $("btn-pick").disabled = locked || Number($("btn-pick").dataset.matching || 0) === 0;
     for (const button of document.querySelectorAll(".pick-one")) button.disabled = locked;
 }
@@ -160,21 +170,25 @@ function showResult(outcome) {
     box.replaceChildren(el("span", { class: "when" }, outcome.time || ""), text);
 }
 
+/** Queues a pick; the robot thread runs it, and refreshStatus() picks up the outcome. */
 async function pick(body, label) {
-    state.picking = true;
+    const now = () => new Date().toLocaleTimeString([], { hour12: false });
+    state.pendingJob = "sending";
     updateButtons();
-    showResult({ busy: true, request: label, time: new Date().toLocaleTimeString([], { hour12: false }) });
-    try {
-        await getJSON("/pick", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-    } finally {
-        state.picking = false;
-        await refreshStatus().catch(() => {});  // shows the recorded outcome
-        refreshParts().catch(() => {});
+    showResult({ busy: true, request: label, time: now() });
+    const { ok, data } = await getJSON("/pick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    }).catch(() => ({ ok: false, data: { error: "no connection to Pi" } }));
+    if (ok) {
+        state.pendingJob = data.job;
+    } else {
+        state.pendingJob = null;   // refused (nothing matches / already busy): nothing was queued
+        showResult({ ok: false, request: label, error: data.error, time: now() });
     }
+    updateButtons();
+    refreshStatus().catch(() => {});
 }
 
 // ---------- pick history ----------

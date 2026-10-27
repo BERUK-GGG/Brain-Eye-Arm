@@ -1,42 +1,33 @@
-import itertools
-import threading
 import time
-from collections import deque
 from typing import List, Optional
 
 import cv2
 from flask import Flask, Response, jsonify, render_template, request
 
 from app.overlay import draw_overlay
-from app.selection import filter_tracked, find_same_object
+from app.pick_worker import PickWorker, WorkerBusy
+from app.selection import filter_tracked
 from app.service import VisionService
 from robot.client import RobotClient
-from robot.picker import PickAndPlaceController, PickInProgress
 
 STREAM_JPEG_QUALITY = 70    # 0-100; lower = smaller frames, more visible artifacts
 STREAM_FPS = 10
 STREAM_WIDTH = 1280         # px; the page shows it ~1000 px wide, so full 2448 px only cost CPU
-HISTORY_LENGTH = 500        # picked objects kept for the HMI's history table (this run only)
 
 
-def create_app(service: VisionService, controller: PickAndPlaceController, assigned_shapes: List[str],
+def create_app(service: VisionService, worker: PickWorker, assigned_shapes: List[str],
                 known_colors: List[str] = (), robot: Optional[RobotClient] = None) -> Flask:
-    """assigned_shapes: the shape names this GUI offers (see config.json's
+    """The HMI's HTTP layer only: it reads the vision service and hands pick
+    jobs to the worker's robot thread (app/pick_worker.py), never driving
+    the robot itself.
+
+    assigned_shapes: the shape names this GUI offers (see config.json's
     place_targets). known_colors: the color names it offers (see
     vision/color.py's PALETTE). Both keep the page in sync with whatever
     this config is actually set up for, rather than hardcoding names into
     the page. robot is optional: without it the status bar shows no link
     state."""
     app = Flask(__name__)
-
-    last_pick = {}              # outcome of the most recent /pick, for /status
-    history = deque(maxlen=HISTORY_LENGTH)  # one entry per handled object, plus failed requests
-    entry_numbers = itertools.count(1)
-    state_lock = threading.Lock()           # guards last_pick and history
-
-    def record(entry: dict) -> None:
-        with state_lock:
-            history.append({"seq": next(entry_numbers), "time": time.strftime("%H:%M:%S"), **entry})
 
     def mjpeg_frames():
         """Draws the latest detections onto the FRESHEST frame for every
@@ -95,16 +86,15 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
 
     @app.route("/status")
     def status():
-        with state_lock:
-            pick = dict(last_pick)
         return jsonify(
             vision=service.stats(),
             robot={
                 "address": robot.address if robot else None,
                 "connected": robot.connected if robot else None,
-                "busy": controller.busy,
+                "busy": worker.busy,
+                "current": worker.current_request,
             },
-            last_pick=pick or None,
+            last_pick=worker.last_outcome(),
         )
 
     @app.route("/history")
@@ -112,12 +102,13 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
         """Handled objects since startup, oldest first; ?after=N returns
         only entries numbered after N."""
         after = request.args.get("after", default=0, type=int)
-        with state_lock:
-            return jsonify(entries=[e for e in history if e["seq"] > after])
+        return jsonify(entries=worker.history_since(after))
 
     @app.route("/pick", methods=["POST"])
     def pick():
-        """One pick-and-place cycle over the current selection. Runs on
+        """Queues one pick-and-place cycle over the current selection and
+        returns at once (202 with a job ID); the robot thread runs it, and
+        /status reports the outcome as last_pick with that job ID. Runs on
         demand only, so the arm never moves unasked.
 
         Body (JSON, all optional): {"shape": "Triangle", "color": "red"},
@@ -137,41 +128,14 @@ def create_app(service: VisionService, controller: PickAndPlaceController, assig
             wanted = " ".join(filter(None, [color, shape])) or "everything tracked"
             tracked = filter_tracked(snapshot, shape=shape, color=color)
 
-        def finish(code: int, **outcome):
-            with state_lock:
-                last_pick.clear()
-                last_pick.update(time=time.strftime("%H:%M:%S"), request=wanted, **outcome)
-            return jsonify(**outcome), code
-
         if not tracked:
             print(f"Pick {wanted}: nothing currently detected matches")
-            return finish(400, ok=False, error=f"No current detection matching '{wanted}' to pick")
-
-        def find_again(shape):
-            """Is the part still lying where it was? (arm is home, out of view)"""
-            return find_same_object(shape, service.redetect())
-
-        if controller.busy:
-            print(f"Pick {wanted}: refused -- a pick cycle is already in progress")
-            return jsonify(ok=False, error="A pick cycle is already in progress"), 409
-
-        print(f"Pick {wanted}: {len(tracked)} part(s)")
-        # No tracker updates while the arm is in view -- see VisionService.
-        service.pause()
+            return jsonify(ok=False, error=f"No current detection matching '{wanted}' to pick"), 400
         try:
-            results = controller.run_cycle(tracked, on_placed=service.discard, on_result=record,
-                                           find_again=find_again)
-        except PickInProgress as e:
+            job_id = worker.submit(wanted, tracked)
+        except WorkerBusy as e:
             print(f"Pick {wanted}: refused -- {e}")
-            return jsonify(ok=False, error=str(e)), 409  # not recorded: the running cycle's outcome matters
-        except Exception as e:
-            print(f"ERROR: pick {wanted} failed: {e}")
-            record({"status": "failed", "request": wanted, "error": str(e)})
-            return finish(500, ok=False, error=str(e))
-        finally:
-            if not controller.busy:  # a refused request mustn't resume during someone else's cycle
-                service.resume()
-        print(f"Pick {wanted}: done -- " + ", ".join(f"{r['shape']} {r['status']}" for r in results))
-        return finish(200, ok=True, results=results)
+            return jsonify(ok=False, error=str(e)), 409
+        return jsonify(ok=True, job=job_id, request=wanted), 202
 
     return app

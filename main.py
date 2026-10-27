@@ -9,6 +9,7 @@ controls and pick history.
 import logging
 import sys
 
+from app.pick_worker import PickWorker
 from app.service import VisionService
 from app.web import create_app
 from config import Config
@@ -45,12 +46,14 @@ def main():
 
         robot = RobotClient(config.robot)
         controller = PickAndPlaceController(robot, config.robot, config.place_targets, config.target_tilt)
+        worker = PickWorker(service, controller)  # the robot communication thread
 
         service.start()
+        worker.start()
         try:
             assigned_shapes = sorted(config.place_targets)
             known_colors = list(PALETTE)
-            app = create_app(service, controller, assigned_shapes, known_colors, robot=robot)
+            app = create_app(service, worker, assigned_shapes, known_colors, robot=robot)
             print("HMI ready on port 5000")
             app.run(host="0.0.0.0", port=5000, threaded=True)
         finally:
