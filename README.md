@@ -9,7 +9,7 @@ INA700 project: a Basler camera and a YOLO model on a Raspberry Pi 4 find shapes
 The operator HMI during a "Pick all" cycle, at 4x speed. [Full recording (55 s, MP4)](Demo/demo.mp4).
 
 ## How it works
-
+[![Architecture diagram](https://gitdiagram.com/diagram-badge.svg)](https://gitdiagram.com/beruk-ggg/brain-eye-arm?utm_source=readme&utm_medium=badge)
 ```
 Basler camera -> VisionService (grab + detect threads) -> Flask UI
                                                              | Pick button
